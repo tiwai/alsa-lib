@@ -102,6 +102,9 @@ endif
 if BUILD_PCM_PLUGIN_MMAP_EMUL
 libpcm_la_SOURCES += pcm_mmap_emul.c
 endif
+if BUILD_PCM_PLUGIN_FALLBACK
+libpcm_la_SOURCES += pcm_fallback.c
+endif
 
 EXTRA_DIST = pcm_dmix_i386.c pcm_dmix_x86_64.c pcm_dmix_generic.c
 

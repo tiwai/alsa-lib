@@ -461,7 +461,7 @@ if test -z "$gcc_have_atomics"; then
 fi
 AC_MSG_RESULT($gcc_have_atomics)
 
-PCM_PLUGIN_LIST="copy linear route mulaw alaw adpcm rate plug multi shm file null empty share meter hooks lfloat ladspa dmix dshare dsnoop asym iec958 softvol extplug ioplug mmap_emul"
+PCM_PLUGIN_LIST="copy linear route mulaw alaw adpcm rate plug multi shm file null empty share meter hooks lfloat ladspa dmix dshare dsnoop asym iec958 softvol extplug ioplug mmap_emul fallback"
 
 build_pcm_plugin="no"
 for t in $PCM_PLUGIN_LIST; do
@@ -543,6 +543,7 @@ AM_CONDITIONAL([BUILD_PCM_PLUGIN_SOFTVOL], [test x$build_pcm_softvol = xyes])
 AM_CONDITIONAL([BUILD_PCM_PLUGIN_EXTPLUG], [test x$build_pcm_extplug = xyes])
 AM_CONDITIONAL([BUILD_PCM_PLUGIN_IOPLUG], [test x$build_pcm_ioplug = xyes])
 AM_CONDITIONAL([BUILD_PCM_PLUGIN_MMAP_EMUL], [test x$build_pcm_mmap_emul = xyes])
+AM_CONDITIONAL([BUILD_PCM_PLUGIN_FALLBACK], [test x$build_pcm_fallback = xyes])
 
 dnl Defines for plug plugin
 if test "$build_pcm_rate" = "yes"; then
