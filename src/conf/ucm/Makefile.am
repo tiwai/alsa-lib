@@ -1,1 +1,1 @@
-SUBDIRS=DAISY-I2S PandaBoard PandaBoardES SDP4430 tegraalc5632 PAZ00 GoogleNyan broadwell-rt286 VEYRON-I2S chtrt5645
+SUBDIRS=DAISY-I2S PandaBoard PandaBoardES SDP4430 tegraalc5632 PAZ00 GoogleNyan broadwell-rt286 VEYRON-I2S chtrt5645 bytcht-da7213 bytcht-nocodec bytcht-pcm512x bytcr-rt5640 bytcr-rt5651 byt-max98090 byt-rt5640 cht-bsw-rt5672 chtmax98090 chtnau8824 sof-bxtda7219max sof-bytcht-da7213 sof-bytcr-rt5640 sof-bytcr-rt5651 sof-cht-bsw-rt5672 sof-chtmax98090 sof-chtrt5645
