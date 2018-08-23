@@ -19,7 +19,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -164,13 +164,10 @@ int snd_spcm_init(snd_pcm_t *pcm,
 		  snd_spcm_xrun_type_t xrun_type)
 {
 	int err;
-	snd_pcm_hw_params_t *hw_params;
-	snd_pcm_sw_params_t *sw_params;
+	snd_pcm_hw_params_t hw_params = {0};
+	snd_pcm_sw_params_t sw_params = {0};
 	unsigned int rrate;
 	unsigned int buffer_time;
-
-	snd_pcm_hw_params_alloca(&hw_params);
-	snd_pcm_sw_params_alloca(&sw_params);
 
 	assert(pcm);
 	assert(rate >= 5000 && rate <= 192000);
@@ -180,13 +177,13 @@ int snd_spcm_init(snd_pcm_t *pcm,
 	err = set_buffer_time(latency, &buffer_time);
 	if (err < 0)
 		return err;
-	err = set_hw_params(pcm, hw_params,
+	err = set_hw_params(pcm, &hw_params,
 			    &rrate, channels, format, subformat,
 			    &buffer_time, NULL, access);
 	if (err < 0)
 		return err;
 
-	err = set_sw_params(pcm, sw_params, xrun_type);
+	err = set_sw_params(pcm, &sw_params, xrun_type);
 	if (err < 0)
 		return err;
 
@@ -221,15 +218,12 @@ int snd_spcm_init_duplex(snd_pcm_t *playback_pcm,
 			 snd_spcm_duplex_type_t duplex_type)
 {
 	int err, i;
-	snd_pcm_hw_params_t *hw_params;
-	snd_pcm_sw_params_t *sw_params;
+	snd_pcm_hw_params_t hw_params = {0};
+	snd_pcm_sw_params_t sw_params = {0};
 	unsigned int rrate;
 	unsigned int xbuffer_time, buffer_time[2];
 	unsigned int period_time[2];
 	snd_pcm_t *pcms[2];
-
-	snd_pcm_hw_params_alloca(&hw_params);
-	snd_pcm_sw_params_alloca(&sw_params);
 
 	assert(playback_pcm);
 	assert(capture_pcm);
@@ -250,7 +244,7 @@ int snd_spcm_init_duplex(snd_pcm_t *playback_pcm,
 		buffer_time[i] = xbuffer_time;
 		period_time[i] = i > 0 ? period_time[0] : 0;
 		rrate = rate;
-		err = set_hw_params(pcms[i], hw_params,
+		err = set_hw_params(pcms[i], &hw_params,
 				    &rrate, channels, format, subformat,
 				    &buffer_time[i], &period_time[i], access);
 		if (err < 0)
@@ -269,7 +263,7 @@ int snd_spcm_init_duplex(snd_pcm_t *playback_pcm,
 	 */
       __sw_params:
 	for (i = 0; i < 2; i++) {
-		err = set_sw_params(pcms[i], sw_params, xrun_type);
+		err = set_sw_params(pcms[i], &sw_params, xrun_type);
 		if (err < 0)
 			return err;
 	}

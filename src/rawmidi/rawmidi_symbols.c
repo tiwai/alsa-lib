@@ -14,18 +14,22 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
 #ifndef PIC
 
 extern const char *_snd_module_rawmidi_hw;
+#ifdef BUILD_SEQ
 extern const char *_snd_module_rawmidi_virt;
+#endif
 
 static const char **snd_rawmidi_open_objects[] = {
 	&_snd_module_rawmidi_hw,
+#ifdef BUILD_SEQ
 	&_snd_module_rawmidi_virt
+#endif
 };
 	
 void *snd_rawmidi_open_symbols(void)

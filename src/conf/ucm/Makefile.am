@@ -1,1 +1,43 @@
-SUBDIRS=DAISY-I2S PandaBoard PandaBoardES SDP4430 tegraalc5632 PAZ00 GoogleNyan broadwell-rt286 VEYRON-I2S chtrt5645 bytcht-da7213 bytcht-nocodec bytcht-pcm512x bytcr-rt5640 bytcr-rt5651 byt-max98090 byt-rt5640 cht-bsw-rt5672 chtmax98090 chtnau8824 sof-bxtda7219max sof-bytcht-da7213 sof-bytcr-rt5640 sof-bytcr-rt5651 sof-cht-bsw-rt5672 sof-chtmax98090 sof-chtrt5645
+SUBDIRS=\
+ASUSTeKCOMPUTERINC.-T100HAN-1.0-T100HAN \
+broadwell-rt286 \
+broxton-rt298 \
+bytcr \
+bytcr-rt5640 \
+bytcr-rt5640-mono-spk-dmic1-mic \
+bytcr-rt5640-mono-spk-in1-mic \
+bytcr-rt5640-mono-spk-in3-mic \
+bytcr-rt5640-stereo-spk-dmic1-mic \
+bytcr-rt5640-stereo-spk-in1-mic \
+bytcr-rt5640-stereo-spk-in3-mic \
+bytcr-rt5651 \
+bytcr-rt5651-mono-spk-in1-mic \
+bytcr-rt5651-mono-spk-in2-mic \
+bytcr-rt5651-mono-spk-in2-mic-hp-swapped \
+bytcr-rt5651-stereo-spk-in1-mic \
+bytcr-rt5651-stereo-spk-in2-mic \
+bytcr-rt5651-stereo-spk-in12-mic \
+chtnau8824 \
+chtrt5645 \
+chtrt5645-mono-speaker-analog-mic \
+cube-i1_TF-Defaultstring-CherryTrailCR \
+DAISY-I2S \
+DB410c \
+Dell-WD15-Dock \
+GoogleNyan \
+gpd-win-pocket-rt5645 \
+HDAudio-Gigabyte-ALC1220DualCodecs \
+HDAudio-Lenovo-DualCodecs \
+LENOVO-80XF-LenovoMIIX320_10ICR-LNVNB161216 \
+nau8824 \
+PandaBoard \
+PandaBoardES \
+PAZ00 \
+PIPO-W2S-Defaultstring-CherryTrailCR \
+rt5640 \
+rt5651 \
+SDP4430 \
+skylake-rt286 \
+TECLAST-X80Pro-Defaultstring-CherryTrailCR \
+tegraalc5632 \
+VEYRON-I2S

@@ -15,7 +15,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -47,7 +47,7 @@
 #error Header defining endianness not defined
 #endif
 #include <stdarg.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <errno.h>
 #if defined(__linux__)
@@ -360,5 +360,9 @@ int _snd_conf_generic_id(const char *id);
 #define container_of(ptr, type, member) ({                      \
 	 const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
 	(type *)( (char *)__mptr - offsetof(type,member) );})
+
+#ifdef INTERNAL
+void *INTERNAL(snd_dlopen)(const char *name, int mode, char *errbuf, size_t errbuflen);
+#endif
 
 #endif

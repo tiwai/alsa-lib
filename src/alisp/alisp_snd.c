@@ -15,7 +15,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -444,7 +444,7 @@ static struct alisp_object * FA_card_info(struct alisp_instance * instance, stru
 {
 	snd_ctl_t *handle;
 	struct alisp_object * lexpr, * p1;
-	snd_ctl_card_info_t * info;
+	snd_ctl_card_info_t info = {0};
 	int err;
 
 	p1 = eval(instance, car(args));
@@ -453,17 +453,16 @@ static struct alisp_object * FA_card_info(struct alisp_instance * instance, stru
 	handle = (snd_ctl_t *)get_ptr(instance, p1, item->prefix);
 	if (handle == NULL)
 		return &alsa_lisp_nil;
-	snd_ctl_card_info_alloca(&info);
-	err = snd_ctl_card_info(handle, info);
+	err = snd_ctl_card_info(handle, &info);
 	lexpr = new_lexpr(instance, err);
 	if (err < 0)
 		return lexpr;
-	p1 = add_cons(instance, lexpr->value.c.cdr, 0, "id", new_string(instance, snd_ctl_card_info_get_id(info)));
-	p1 = add_cons(instance, p1, 1, "driver", new_string(instance, snd_ctl_card_info_get_driver(info)));
-	p1 = add_cons(instance, p1, 1, "name", new_string(instance, snd_ctl_card_info_get_name(info)));
-	p1 = add_cons(instance, p1, 1, "longname", new_string(instance, snd_ctl_card_info_get_longname(info)));
-	p1 = add_cons(instance, p1, 1, "mixername", new_string(instance, snd_ctl_card_info_get_mixername(info)));
-	p1 = add_cons(instance, p1, 1, "components", new_string(instance, snd_ctl_card_info_get_components(info)));
+	p1 = add_cons(instance, lexpr->value.c.cdr, 0, "id", new_string(instance, snd_ctl_card_info_get_id(&info)));
+	p1 = add_cons(instance, p1, 1, "driver", new_string(instance, snd_ctl_card_info_get_driver(&info)));
+	p1 = add_cons(instance, p1, 1, "name", new_string(instance, snd_ctl_card_info_get_name(&info)));
+	p1 = add_cons(instance, p1, 1, "longname", new_string(instance, snd_ctl_card_info_get_longname(&info)));
+	p1 = add_cons(instance, p1, 1, "mixername", new_string(instance, snd_ctl_card_info_get_mixername(&info)));
+	p1 = add_cons(instance, p1, 1, "components", new_string(instance, snd_ctl_card_info_get_components(&info)));
 	if (p1 == NULL) {
 		delete_tree(instance, lexpr);
 		return NULL;
@@ -523,7 +522,7 @@ static int parse_ctl_elem_id(struct alisp_instance * instance,
 static struct alisp_object * FA_hctl_find_elem(struct alisp_instance * instance, struct acall_table * item, struct alisp_object * args)
 {
 	snd_hctl_t *handle;
-	snd_ctl_elem_id_t *id;
+	snd_ctl_elem_id_t id = {0};
 	struct alisp_object *p1;
 
 	handle = (snd_hctl_t *)get_ptr(instance, car(args), item->prefix);
@@ -532,22 +531,21 @@ static struct alisp_object * FA_hctl_find_elem(struct alisp_instance * instance,
 		delete_object(instance, args);
 		return &alsa_lisp_nil;
 	}
-	snd_ctl_elem_id_alloca(&id);
 	p1 = car(cdr(args));
 	delete_tree(instance, cdr(cdr(args)));
 	delete_object(instance, cdr(args));
 	delete_object(instance, args);
-	if (parse_ctl_elem_id(instance, eval(instance, p1), id) < 0)
+	if (parse_ctl_elem_id(instance, eval(instance, p1), &id) < 0)
 		return &alsa_lisp_nil;
-	return new_cons_pointer(instance, "hctl_elem", snd_hctl_find_elem(handle, id));
+	return new_cons_pointer(instance, "hctl_elem", snd_hctl_find_elem(handle, &id));
 }
 
 static struct alisp_object * FA_hctl_elem_info(struct alisp_instance * instance, struct acall_table * item, struct alisp_object * args)
 {
 	snd_hctl_elem_t *handle;
 	struct alisp_object * lexpr, * p1, * p2;
-	snd_ctl_elem_info_t *info;
-	snd_ctl_elem_id_t *id;
+	snd_ctl_elem_info_t info = {0};
+	snd_ctl_elem_id_t id = {0};
 	snd_ctl_elem_type_t type;
 	int err;
 
@@ -557,60 +555,58 @@ static struct alisp_object * FA_hctl_elem_info(struct alisp_instance * instance,
 	handle = (snd_hctl_elem_t *)get_ptr(instance, p1, item->prefix);
 	if (handle == NULL)
 		return &alsa_lisp_nil;
-	snd_ctl_elem_info_alloca(&info);
-	snd_ctl_elem_id_alloca(&id);
-	err = snd_hctl_elem_info(handle, info);
+	err = snd_hctl_elem_info(handle, &info);
 	lexpr = new_lexpr(instance, err);
 	if (err < 0)
 		return lexpr;
-	type = snd_ctl_elem_info_get_type(info);
+	type = snd_ctl_elem_info_get_type(&info);
 	p1 = add_cons(instance, lexpr->value.c.cdr, 0, "id", p2 = new_object(instance, ALISP_OBJ_CONS));
-	snd_ctl_elem_info_get_id(info, id);
-	if (create_ctl_elem_id(instance, id, p2) == NULL) {
+	snd_ctl_elem_info_get_id(&info, &id);
+	if (create_ctl_elem_id(instance, &id, p2) == NULL) {
 		delete_tree(instance, lexpr);
 		return NULL;
 	}
 	p1 = add_cons(instance, p1, 1, "type", new_string(instance, snd_ctl_elem_type_name(type)));
-	p1 = add_cons(instance, p1, 1, "readable", new_integer(instance, snd_ctl_elem_info_is_readable(info)));
-	p1 = add_cons(instance, p1, 1, "writable", new_integer(instance, snd_ctl_elem_info_is_writable(info)));
-	p1 = add_cons(instance, p1, 1, "volatile", new_integer(instance, snd_ctl_elem_info_is_volatile(info)));
-	p1 = add_cons(instance, p1, 1, "inactive", new_integer(instance, snd_ctl_elem_info_is_inactive(info)));
-	p1 = add_cons(instance, p1, 1, "locked", new_integer(instance, snd_ctl_elem_info_is_locked(info)));
-	p1 = add_cons(instance, p1, 1, "isowner", new_integer(instance, snd_ctl_elem_info_is_owner(info)));
-	p1 = add_cons(instance, p1, 1, "owner", new_integer(instance, snd_ctl_elem_info_get_owner(info)));
-	p1 = add_cons(instance, p1, 1, "count", new_integer(instance, snd_ctl_elem_info_get_count(info)));
-	err = snd_ctl_elem_info_get_dimensions(info);
+	p1 = add_cons(instance, p1, 1, "readable", new_integer(instance, snd_ctl_elem_info_is_readable(&info)));
+	p1 = add_cons(instance, p1, 1, "writable", new_integer(instance, snd_ctl_elem_info_is_writable(&info)));
+	p1 = add_cons(instance, p1, 1, "volatile", new_integer(instance, snd_ctl_elem_info_is_volatile(&info)));
+	p1 = add_cons(instance, p1, 1, "inactive", new_integer(instance, snd_ctl_elem_info_is_inactive(&info)));
+	p1 = add_cons(instance, p1, 1, "locked", new_integer(instance, snd_ctl_elem_info_is_locked(&info)));
+	p1 = add_cons(instance, p1, 1, "isowner", new_integer(instance, snd_ctl_elem_info_is_owner(&info)));
+	p1 = add_cons(instance, p1, 1, "owner", new_integer(instance, snd_ctl_elem_info_get_owner(&info)));
+	p1 = add_cons(instance, p1, 1, "count", new_integer(instance, snd_ctl_elem_info_get_count(&info)));
+	err = INTERNAL(snd_ctl_elem_info_get_dimensions)(&info);
 	if (err > 0) {
 		int idx;
 		p1 = add_cons(instance, p1, 1, "dimensions", p2 = new_object(instance, ALISP_OBJ_CONS));
 		for (idx = 0; idx < err; idx++)
-			p2 = add_cons2(instance, p2, idx > 0, new_integer(instance, snd_ctl_elem_info_get_dimension(info, idx)));
+			p2 = add_cons2(instance, p2, idx > 0, new_integer(instance, INTERNAL(snd_ctl_elem_info_get_dimension)(&info, idx)));
 	}
 	switch (type) {
 	case SND_CTL_ELEM_TYPE_ENUMERATED: {
 		unsigned int items, item;
-		items = snd_ctl_elem_info_get_items(info);
+		items = snd_ctl_elem_info_get_items(&info);
 		p1 = add_cons(instance, p1, 1, "items", p2 = new_object(instance, ALISP_OBJ_CONS));
 		for (item = 0; item < items; item++) {
-			snd_ctl_elem_info_set_item(info, item);
-			err = snd_hctl_elem_info(handle, info);
+			snd_ctl_elem_info_set_item(&info, item);
+			err = snd_hctl_elem_info(handle, &info);
 			if (err < 0) {
 				p2 = add_cons2(instance, p2, item, &alsa_lisp_nil);
 			} else {
-				p2 = add_cons2(instance, p2, item, new_string(instance, snd_ctl_elem_info_get_item_name(info)));
+				p2 = add_cons2(instance, p2, item, new_string(instance, snd_ctl_elem_info_get_item_name(&info)));
 			}
 		}
 		break;
 	}
 	case SND_CTL_ELEM_TYPE_INTEGER:
-		p1 = add_cons(instance, p1, 1, "min", new_integer(instance, snd_ctl_elem_info_get_min(info)));
-		p1 = add_cons(instance, p1, 1, "max", new_integer(instance, snd_ctl_elem_info_get_max(info)));
-		p1 = add_cons(instance, p1, 1, "step", new_integer(instance, snd_ctl_elem_info_get_step(info)));
+		p1 = add_cons(instance, p1, 1, "min", new_integer(instance, snd_ctl_elem_info_get_min(&info)));
+		p1 = add_cons(instance, p1, 1, "max", new_integer(instance, snd_ctl_elem_info_get_max(&info)));
+		p1 = add_cons(instance, p1, 1, "step", new_integer(instance, snd_ctl_elem_info_get_step(&info)));
 		break;
 	case SND_CTL_ELEM_TYPE_INTEGER64:
-		p1 = add_cons(instance, p1, 1, "min64", new_float(instance, snd_ctl_elem_info_get_min64(info)));
-		p1 = add_cons(instance, p1, 1, "max64", new_float(instance, snd_ctl_elem_info_get_max64(info)));
-		p1 = add_cons(instance, p1, 1, "step64", new_float(instance, snd_ctl_elem_info_get_step64(info)));
+		p1 = add_cons(instance, p1, 1, "min64", new_float(instance, snd_ctl_elem_info_get_min64(&info)));
+		p1 = add_cons(instance, p1, 1, "max64", new_float(instance, snd_ctl_elem_info_get_max64(&info)));
+		p1 = add_cons(instance, p1, 1, "step64", new_float(instance, snd_ctl_elem_info_get_step64(&info)));
 		break;
 	default:
 		break;
@@ -626,8 +622,8 @@ static struct alisp_object * FA_hctl_elem_read(struct alisp_instance * instance,
 {
 	snd_hctl_elem_t *handle;
 	struct alisp_object * lexpr, * p1 = NULL, * obj;
-	snd_ctl_elem_info_t *info;
-	snd_ctl_elem_value_t *value;
+	snd_ctl_elem_info_t info = {0};
+	snd_ctl_elem_value_t value = {0};
 	snd_ctl_elem_type_t type;
 	unsigned int idx, count;
 	int err;
@@ -638,16 +634,14 @@ static struct alisp_object * FA_hctl_elem_read(struct alisp_instance * instance,
 	handle = (snd_hctl_elem_t *)get_ptr(instance, p1, item->prefix);
 	if (handle == NULL)
 		return &alsa_lisp_nil;
-	snd_ctl_elem_info_alloca(&info);
-	snd_ctl_elem_value_alloca(&value);
-	err = snd_hctl_elem_info(handle, info);
+	err = snd_hctl_elem_info(handle, &info);
 	if (err >= 0)
-		err = snd_hctl_elem_read(handle, value);
+		err = snd_hctl_elem_read(handle, &value);
 	lexpr = new_lexpr(instance, err);
 	if (err < 0)
 		return lexpr;
-	type = snd_ctl_elem_info_get_type(info);
-	count = snd_ctl_elem_info_get_count(info);
+	type = snd_ctl_elem_info_get_type(&info);
+	count = snd_ctl_elem_info_get_count(&info);
 	if (type == SND_CTL_ELEM_TYPE_IEC958) {
 		count = sizeof(snd_aes_iec958_t);
 		type = SND_CTL_ELEM_TYPE_BYTES;
@@ -655,19 +649,19 @@ static struct alisp_object * FA_hctl_elem_read(struct alisp_instance * instance,
 	for (idx = 0; idx < count; idx++) {
 		switch (type) {
 		case SND_CTL_ELEM_TYPE_BOOLEAN:
-			obj = new_integer(instance, snd_ctl_elem_value_get_boolean(value, idx));
+			obj = new_integer(instance, snd_ctl_elem_value_get_boolean(&value, idx));
 			break;
 		case SND_CTL_ELEM_TYPE_INTEGER:
-			obj = new_integer(instance, snd_ctl_elem_value_get_integer(value, idx));
+			obj = new_integer(instance, snd_ctl_elem_value_get_integer(&value, idx));
 			break;
 		case SND_CTL_ELEM_TYPE_INTEGER64:
-			obj = new_integer(instance, snd_ctl_elem_value_get_integer64(value, idx));
+			obj = new_integer(instance, snd_ctl_elem_value_get_integer64(&value, idx));
 			break;
 		case SND_CTL_ELEM_TYPE_ENUMERATED:
-			obj = new_integer(instance, snd_ctl_elem_value_get_enumerated(value, idx));
+			obj = new_integer(instance, snd_ctl_elem_value_get_enumerated(&value, idx));
 			break;
 		case SND_CTL_ELEM_TYPE_BYTES:
-			obj = new_integer(instance, snd_ctl_elem_value_get_byte(value, idx));
+			obj = new_integer(instance, snd_ctl_elem_value_get_byte(&value, idx));
 			break;
 		default:
 			obj = NULL;
@@ -690,8 +684,8 @@ static struct alisp_object * FA_hctl_elem_write(struct alisp_instance * instance
 {
 	snd_hctl_elem_t *handle;
 	struct alisp_object * p1 = NULL, * obj;
-	snd_ctl_elem_info_t *info;
-	snd_ctl_elem_value_t *value;
+	snd_ctl_elem_info_t info = {0};
+	snd_ctl_elem_value_t value = {0};
 	snd_ctl_elem_type_t type;
 	unsigned int idx, count;
 	int err;
@@ -706,15 +700,13 @@ static struct alisp_object * FA_hctl_elem_write(struct alisp_instance * instance
 		delete_tree(instance, p1);
 		return &alsa_lisp_nil;
 	}
-	snd_ctl_elem_info_alloca(&info);
-	snd_ctl_elem_value_alloca(&value);
-	err = snd_hctl_elem_info(handle, info);
+	err = snd_hctl_elem_info(handle, &info);
 	if (err < 0) {
 		delete_tree(instance, p1);
 		return new_integer(instance, err);
 	}
-	type = snd_ctl_elem_info_get_type(info);
-	count = snd_ctl_elem_info_get_count(info);
+	type = snd_ctl_elem_info_get_type(&info);
+	count = snd_ctl_elem_info_get_count(&info);
 	if (type == SND_CTL_ELEM_TYPE_IEC958) {
 		count = sizeof(snd_aes_iec958_t);
 		type = SND_CTL_ELEM_TYPE_BYTES;
@@ -728,19 +720,19 @@ static struct alisp_object * FA_hctl_elem_write(struct alisp_instance * instance
 		obj = car(p1);
 		switch (type) {
 		case SND_CTL_ELEM_TYPE_BOOLEAN:
-			snd_ctl_elem_value_set_boolean(value, idx, get_integer(obj));
+			snd_ctl_elem_value_set_boolean(&value, idx, get_integer(obj));
 			break;
 		case SND_CTL_ELEM_TYPE_INTEGER:
-			snd_ctl_elem_value_set_integer(value, idx, get_integer(obj));
+			snd_ctl_elem_value_set_integer(&value, idx, get_integer(obj));
 			break;
 		case SND_CTL_ELEM_TYPE_INTEGER64:
-			snd_ctl_elem_value_set_integer64(value, idx, get_integer(obj));
+			snd_ctl_elem_value_set_integer64(&value, idx, get_integer(obj));
 			break;
 		case SND_CTL_ELEM_TYPE_ENUMERATED:
-			snd_ctl_elem_value_set_enumerated(value, idx, get_integer(obj));
+			snd_ctl_elem_value_set_enumerated(&value, idx, get_integer(obj));
 			break;
 		case SND_CTL_ELEM_TYPE_BYTES:
-			snd_ctl_elem_value_set_byte(value, idx, get_integer(obj));
+			snd_ctl_elem_value_set_byte(&value, idx, get_integer(obj));
 			break;
 		default:
 			break;
@@ -749,7 +741,7 @@ static struct alisp_object * FA_hctl_elem_write(struct alisp_instance * instance
 		p1 = cdr(obj = p1);
 		delete_object(instance, obj);
 	} while (p1 != &alsa_lisp_nil);
-	err = snd_hctl_elem_write(handle, value);
+	err = snd_hctl_elem_write(handle, &value);
 	return new_integer(instance, err);
 }
 
@@ -757,7 +749,7 @@ static struct alisp_object * FA_pcm_info(struct alisp_instance * instance, struc
 {
 	snd_pcm_t *handle;
 	struct alisp_object * lexpr, * p1;
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	int err;
 
 	p1 = eval(instance, car(args));
@@ -766,22 +758,21 @@ static struct alisp_object * FA_pcm_info(struct alisp_instance * instance, struc
 	handle = (snd_pcm_t *)get_ptr(instance, p1, item->prefix);
 	if (handle == NULL)
 		return &alsa_lisp_nil;
-	snd_pcm_info_alloca(&info);
-	err = snd_pcm_info(handle, info);
+	err = snd_pcm_info(handle, &info);
 	lexpr = new_lexpr(instance, err);
 	if (err < 0)
 		return lexpr;
-	p1 = add_cons(instance, lexpr->value.c.cdr, 0, "card", new_integer(instance, snd_pcm_info_get_card(info)));
-	p1 = add_cons(instance, p1, 1, "device", new_integer(instance, snd_pcm_info_get_device(info)));
-	p1 = add_cons(instance, p1, 1, "subdevice", new_integer(instance, snd_pcm_info_get_subdevice(info)));
-	p1 = add_cons(instance, p1, 1, "id", new_string(instance, snd_pcm_info_get_id(info)));
-	p1 = add_cons(instance, p1, 1, "name", new_string(instance, snd_pcm_info_get_name(info)));
-	p1 = add_cons(instance, p1, 1, "subdevice_name", new_string(instance, snd_pcm_info_get_subdevice_name(info)));
-	p1 = add_cons(instance, p1, 1, "class", new_integer(instance, snd_pcm_info_get_class(info)));
-	p1 = add_cons(instance, p1, 1, "subclass", new_integer(instance, snd_pcm_info_get_subclass(info)));
-	p1 = add_cons(instance, p1, 1, "subdevices_count", new_integer(instance, snd_pcm_info_get_subdevices_count(info)));
-	p1 = add_cons(instance, p1, 1, "subdevices_avail", new_integer(instance, snd_pcm_info_get_subdevices_avail(info)));
-	//p1 = add_cons(instance, p1, 1, "sync", new_string(instance, snd_pcm_info_get_sync(info)));
+	p1 = add_cons(instance, lexpr->value.c.cdr, 0, "card", new_integer(instance, snd_pcm_info_get_card(&info)));
+	p1 = add_cons(instance, p1, 1, "device", new_integer(instance, snd_pcm_info_get_device(&info)));
+	p1 = add_cons(instance, p1, 1, "subdevice", new_integer(instance, snd_pcm_info_get_subdevice(&info)));
+	p1 = add_cons(instance, p1, 1, "id", new_string(instance, snd_pcm_info_get_id(&info)));
+	p1 = add_cons(instance, p1, 1, "name", new_string(instance, snd_pcm_info_get_name(&info)));
+	p1 = add_cons(instance, p1, 1, "subdevice_name", new_string(instance, snd_pcm_info_get_subdevice_name(&info)));
+	p1 = add_cons(instance, p1, 1, "class", new_integer(instance, snd_pcm_info_get_class(&info)));
+	p1 = add_cons(instance, p1, 1, "subclass", new_integer(instance, snd_pcm_info_get_subclass(&info)));
+	p1 = add_cons(instance, p1, 1, "subdevices_count", new_integer(instance, snd_pcm_info_get_subdevices_count(&info)));
+	p1 = add_cons(instance, p1, 1, "subdevices_avail", new_integer(instance, snd_pcm_info_get_subdevices_avail(&info)));
+	//p1 = add_cons(instance, p1, 1, "sync", new_string(instance, snd_pcm_info_get_sync(&info)));
 	return lexpr;
 }
 

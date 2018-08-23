@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -157,23 +157,14 @@ static void snd_pcm_dshare_sync_area(snd_pcm_t *pcm)
 /*
  *  synchronize hardware pointer (hw_ptr) with ours
  */
-static int snd_pcm_dshare_sync_ptr(snd_pcm_t *pcm)
+static int snd_pcm_dshare_sync_ptr0(snd_pcm_t *pcm, snd_pcm_uframes_t slave_hw_ptr)
 {
 	snd_pcm_direct_t *dshare = pcm->private_data;
-	snd_pcm_uframes_t slave_hw_ptr, old_slave_hw_ptr, avail;
+	snd_pcm_uframes_t old_slave_hw_ptr, avail;
 	snd_pcm_sframes_t diff;
-	
-	switch (snd_pcm_state(dshare->spcm)) {
-	case SND_PCM_STATE_DISCONNECTED:
-		dshare->state = SNDRV_PCM_STATE_DISCONNECTED;
-		return -ENODEV;
-	default:
-		break;
-	}
-	if (dshare->slowptr)
-		snd_pcm_hwsync(dshare->spcm);
+
 	old_slave_hw_ptr = dshare->slave_hw_ptr;
-	slave_hw_ptr = dshare->slave_hw_ptr = *dshare->spcm->hw.ptr;
+	dshare->slave_hw_ptr = slave_hw_ptr;
 	diff = slave_hw_ptr - old_slave_hw_ptr;
 	if (diff == 0)		/* fast path */
 		return 0;
@@ -195,6 +186,7 @@ static int snd_pcm_dshare_sync_ptr(snd_pcm_t *pcm)
 		dshare->avail_max = avail;
 	if (avail >= pcm->stop_threshold) {
 		snd_timer_stop(dshare->timer);
+		do_silence(pcm);
 		gettimestamp(&dshare->trigger_tstamp, pcm->tstamp_type);
 		if (dshare->state == SND_PCM_STATE_RUNNING) {
 			dshare->state = SND_PCM_STATE_XRUN;
@@ -207,47 +199,80 @@ static int snd_pcm_dshare_sync_ptr(snd_pcm_t *pcm)
 	return 0;
 }
 
+static int snd_pcm_dshare_sync_ptr(snd_pcm_t *pcm)
+{
+	snd_pcm_direct_t *dshare = pcm->private_data;
+	int err;
+
+	switch (snd_pcm_state(dshare->spcm)) {
+	case SND_PCM_STATE_DISCONNECTED:
+		dshare->state = SNDRV_PCM_STATE_DISCONNECTED;
+		return -ENODEV;
+	case SND_PCM_STATE_XRUN:
+		if ((err = snd_pcm_direct_slave_recover(dshare)) < 0)
+			return err;
+		break;
+	default:
+		break;
+	}
+	if (snd_pcm_direct_client_chk_xrun(dshare, pcm))
+		return -EPIPE;
+	if (dshare->slowptr)
+		snd_pcm_hwsync(dshare->spcm);
+
+	return snd_pcm_dshare_sync_ptr0(pcm, *dshare->spcm->hw.ptr);
+}
+
 /*
  *  plugin implementation
  */
+
+static snd_pcm_state_t snd_pcm_dshare_state(snd_pcm_t *pcm);
 
 static int snd_pcm_dshare_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 {
 	snd_pcm_direct_t *dshare = pcm->private_data;
 
+	memset(status, 0, sizeof(*status));
+	snd_pcm_status(dshare->spcm, status);
+
 	switch (dshare->state) {
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
-		snd_pcm_dshare_sync_ptr(pcm);
+		snd_pcm_dshare_sync_ptr0(pcm, status->hw_ptr);
+		status->delay += snd_pcm_mmap_playback_delay(pcm)
+				+ status->avail - dshare->spcm->buffer_size;
 		break;
 	default:
 		break;
 	}
-	memset(status, 0, sizeof(*status));
-	snd_pcm_status(dshare->spcm, status);
-	status->state = snd_pcm_state(dshare->spcm);
+	status->state = snd_pcm_dshare_state(pcm);
 	status->trigger_tstamp = dshare->trigger_tstamp;
 	status->avail = snd_pcm_mmap_playback_avail(pcm);
 	status->avail_max = status->avail > dshare->avail_max ? status->avail : dshare->avail_max;
 	dshare->avail_max = 0;
-	status->delay = snd_pcm_mmap_playback_delay(pcm);
 	return 0;
 }
 
 static snd_pcm_state_t snd_pcm_dshare_state(snd_pcm_t *pcm)
 {
 	snd_pcm_direct_t *dshare = pcm->private_data;
+	int err;
 	snd_pcm_state_t state;
 	state = snd_pcm_state(dshare->spcm);
 	switch (state) {
-	case SND_PCM_STATE_XRUN:
 	case SND_PCM_STATE_SUSPENDED:
 	case SND_PCM_STATE_DISCONNECTED:
 		dshare->state = state;
 		return state;
+	case SND_PCM_STATE_XRUN:
+		if ((err = snd_pcm_direct_slave_recover(dshare)) < 0)
+			return err;
+		break;
 	default:
 		break;
 	}
+	snd_pcm_direct_client_chk_xrun(dshare, pcm);
 	if (dshare->state == STATE_RUN_PENDING)
 		return SNDRV_PCM_STATE_RUNNING;
 	return dshare->state;
@@ -354,7 +379,8 @@ static int snd_pcm_dshare_drop(snd_pcm_t *pcm)
 	return 0;
 }
 
-static int snd_pcm_dshare_drain(snd_pcm_t *pcm)
+/* locked version */
+static int __snd_pcm_dshare_drain(snd_pcm_t *pcm)
 {
 	snd_pcm_direct_t *dshare = pcm->private_data;
 	snd_pcm_uframes_t stop_threshold;
@@ -410,6 +436,16 @@ static int snd_pcm_dshare_drain(snd_pcm_t *pcm)
 	} while (dshare->state == SND_PCM_STATE_DRAINING);
 	pcm->stop_threshold = stop_threshold;
 	return 0;
+}
+
+static int snd_pcm_dshare_drain(snd_pcm_t *pcm)
+{
+	int err;
+
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_dshare_drain(pcm);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 static int snd_pcm_dshare_pause(snd_pcm_t *pcm ATTRIBUTE_UNUSED, int enable ATTRIBUTE_UNUSED)
@@ -493,12 +529,16 @@ static snd_pcm_sframes_t snd_pcm_dshare_mmap_commit(snd_pcm_t *pcm,
 
 	switch (snd_pcm_state(dshare->spcm)) {
 	case SND_PCM_STATE_XRUN:
-		return -EPIPE;
+		if ((err = snd_pcm_direct_slave_recover(dshare)) < 0)
+			return err;
+		break;
 	case SND_PCM_STATE_SUSPENDED:
 		return -ESTRPIPE;
 	default:
 		break;
 	}
+	if (snd_pcm_direct_client_chk_xrun(dshare, pcm))
+		return -EPIPE;
 	if (! size)
 		return 0;
 	snd_pcm_mmap_appl_forward(pcm, size);
@@ -506,8 +546,10 @@ static snd_pcm_sframes_t snd_pcm_dshare_mmap_commit(snd_pcm_t *pcm,
 		if ((err = snd_pcm_dshare_start_timer(dshare)) < 0)
 			return err;
 	} else if (dshare->state == SND_PCM_STATE_RUNNING ||
-		   dshare->state == SND_PCM_STATE_DRAINING)
-		snd_pcm_dshare_sync_ptr(pcm);
+		   dshare->state == SND_PCM_STATE_DRAINING) {
+		if ((err = snd_pcm_dshare_sync_ptr(pcm)) < 0)
+			return err;
+	}
 	if (dshare->state == SND_PCM_STATE_RUNNING ||
 	    dshare->state == SND_PCM_STATE_DRAINING) {
 		/* ok, we commit the changes after the validation of area */
@@ -523,10 +565,16 @@ static snd_pcm_sframes_t snd_pcm_dshare_mmap_commit(snd_pcm_t *pcm,
 static snd_pcm_sframes_t snd_pcm_dshare_avail_update(snd_pcm_t *pcm)
 {
 	snd_pcm_direct_t *dshare = pcm->private_data;
+	int err;
 	
 	if (dshare->state == SND_PCM_STATE_RUNNING ||
-	    dshare->state == SND_PCM_STATE_DRAINING)
-		snd_pcm_dshare_sync_ptr(pcm);
+	    dshare->state == SND_PCM_STATE_DRAINING) {
+		if ((err = snd_pcm_dshare_sync_ptr(pcm)) < 0)
+			return err;
+	}
+	if (dshare->state == SND_PCM_STATE_XRUN)
+		return -EPIPE;
+
 	return snd_pcm_mmap_playback_avail(pcm);
 }
 
@@ -608,7 +656,7 @@ static const snd_pcm_fast_ops_t snd_pcm_dshare_fast_ops = {
 	.avail_update = snd_pcm_dshare_avail_update,
 	.mmap_commit = snd_pcm_dshare_mmap_commit,
 	.htimestamp = snd_pcm_dshare_htimestamp,
-	.poll_descriptors = NULL,
+	.poll_descriptors = snd_pcm_direct_poll_descriptors,
 	.poll_descriptors_count = NULL,
 	.poll_revents = snd_pcm_direct_poll_revents,
 };
@@ -702,6 +750,7 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 	dshare->state = SND_PCM_STATE_OPEN;
 	dshare->slowptr = opts->slowptr;
 	dshare->max_periods = opts->max_periods;
+	dshare->var_periodsize = opts->var_periodsize;
 	dshare->sync_ptr = snd_pcm_dshare_sync_ptr;
 
  retry:
@@ -824,9 +873,10 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 		snd_pcm_direct_client_discard(dshare);
 	if (spcm)
 		snd_pcm_close(spcm);
-	if (dshare->shmid >= 0)
-		snd_pcm_direct_shm_discard(dshare);
-	if (snd_pcm_direct_semaphore_discard(dshare) < 0)
+	if ((dshare->shmid >= 0) && (snd_pcm_direct_shm_discard(dshare))) {
+		if (snd_pcm_direct_semaphore_discard(dshare))
+			snd_pcm_direct_semaphore_final(dshare, DIRECT_IPC_SEM_CLIENT);
+	} else
 		snd_pcm_direct_semaphore_up(dshare, DIRECT_IPC_SEM_CLIENT);
  _err_nosem:
 	if (dshare) {

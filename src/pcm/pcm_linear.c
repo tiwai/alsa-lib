@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -100,8 +100,11 @@ int snd_pcm_linear_get_index(snd_pcm_format_t src_format, snd_pcm_format_t dst_f
 		default:
 			width = 2; break;
 		}
-		return width * 4 + endian * 2 + sign + 16;
+		return width * 4 + endian * 2 + sign + 20;
 	} else {
+		if (width == 20)
+			width = 40;
+
 		width = width / 8 - 1;
 		return width * 4 + endian * 2 + sign;
 	}
@@ -131,8 +134,11 @@ int snd_pcm_linear_put_index(snd_pcm_format_t src_format, snd_pcm_format_t dst_f
 		default:
 			width = 2; break;
 		}
-		return width * 4 + endian * 2 + sign + 16;
+		return width * 4 + endian * 2 + sign + 20;
 	} else {
+		if (width == 20)
+			width = 40;
+
 		width = width / 8 - 1;
 		return width * 4 + endian * 2 + sign;
 	}
@@ -183,7 +189,7 @@ void snd_pcm_linear_getput(const snd_pcm_channel_area_t *dst_areas, snd_pcm_ufra
 	void *get = get32_labels[get_idx];
 	void *put = put32_labels[put_idx];
 	unsigned int channel;
-	u_int32_t sample = 0;
+	uint32_t sample = 0;
 	for (channel = 0; channel < channels; ++channel) {
 		const char *src;
 		char *dst;
@@ -303,7 +309,9 @@ static int snd_pcm_linear_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params)
 	if (err < 0)
 		return err;
 	linear->use_getput = (snd_pcm_format_physical_width(format) == 24 ||
-			      snd_pcm_format_physical_width(linear->sformat) == 24);
+			      snd_pcm_format_physical_width(linear->sformat) == 24 ||
+			      snd_pcm_format_width(format) == 20 ||
+			      snd_pcm_format_width(linear->sformat) == 20);
 	if (linear->use_getput) {
 		if (pcm->stream == SND_PCM_STREAM_PLAYBACK) {
 			linear->get_idx = snd_pcm_linear_get_index(format, SND_PCM_FORMAT_S32);

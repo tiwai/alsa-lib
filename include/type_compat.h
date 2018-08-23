@@ -15,7 +15,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -46,18 +46,6 @@
 #endif
 #ifndef __le64
 #define __le64	uint64_t
-#endif
-#ifndef u_int8_t
-#define u_int8_t	uint8_t
-#endif
-#ifndef u_int16_t
-#define u_int16_t	uint16_t
-#endif
-#ifndef u_int32_t
-#define u_int32_t	uint32_t
-#endif
-#ifndef u_int32_t
-#define u_int32_t	uint64_t
 #endif
 #ifndef __kernel_pid_t
 #define __kernel_pid_t	pid_t

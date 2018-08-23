@@ -28,7 +28,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -588,7 +588,7 @@ int snd_func_datadir(snd_config_t **dst, snd_config_t *root ATTRIBUTE_UNUSED,
 	err = snd_config_get_id(src, &id);
 	if (err < 0)
 		return err;
-	return snd_config_imake_string(dst, id, ALSA_CONFIG_DIR);
+	return snd_config_imake_string(dst, id, snd_config_topdir());
 }
 #ifndef DOC_HIDDEN
 SND_DLSYM_BUILD_VERSION(snd_func_datadir, SND_CONFIG_DLSYM_VERSION_EVALUATE);
@@ -664,7 +664,7 @@ SND_DLSYM_BUILD_VERSION(snd_func_private_string, SND_CONFIG_DLSYM_VERSION_EVALUA
 int snd_determine_driver(int card, char **driver)
 {
 	snd_ctl_t *ctl = NULL;
-	snd_ctl_card_info_t *info;
+	snd_ctl_card_info_t info = {0};
 	char *res = NULL;
 	int err;
 
@@ -674,13 +674,12 @@ int snd_determine_driver(int card, char **driver)
 		SNDERR("could not open control for card %i", card);
 		goto __error;
 	}
-	snd_ctl_card_info_alloca(&info);
-	err = snd_ctl_card_info(ctl, info);
+	err = snd_ctl_card_info(ctl, &info);
 	if (err < 0) {
 		SNDERR("snd_ctl_card_info error: %s", snd_strerror(err));
 		goto __error;
 	}
-	res = strdup(snd_ctl_card_info_get_driver(info));
+	res = strdup(snd_ctl_card_info_get_driver(&info));
 	if (res == NULL)
 		err = -ENOMEM;
 	else {
@@ -863,7 +862,7 @@ int snd_func_card_id(snd_config_t **dst, snd_config_t *root, snd_config_t *src,
 		     snd_config_t *private_data)
 {
 	snd_ctl_t *ctl = NULL;
-	snd_ctl_card_info_t *info;
+	snd_ctl_card_info_t info = {0};
 	const char *id;
 	int card, err;
 	
@@ -875,8 +874,7 @@ int snd_func_card_id(snd_config_t **dst, snd_config_t *root, snd_config_t *src,
 		SNDERR("could not open control for card %i", card);
 		goto __error;
 	}
-	snd_ctl_card_info_alloca(&info);
-	err = snd_ctl_card_info(ctl, info);
+	err = snd_ctl_card_info(ctl, &info);
 	if (err < 0) {
 		SNDERR("snd_ctl_card_info error: %s", snd_strerror(err));
 		goto __error;
@@ -884,7 +882,7 @@ int snd_func_card_id(snd_config_t **dst, snd_config_t *root, snd_config_t *src,
 	err = snd_config_get_id(src, &id);
 	if (err >= 0)
 		err = snd_config_imake_string(dst, id,
-					      snd_ctl_card_info_get_id(info));
+					      snd_ctl_card_info_get_id(&info));
       __error:
       	if (ctl)
       		snd_ctl_close(ctl);
@@ -915,7 +913,7 @@ int snd_func_card_name(snd_config_t **dst, snd_config_t *root,
 		       snd_config_t *src, snd_config_t *private_data)
 {
 	snd_ctl_t *ctl = NULL;
-	snd_ctl_card_info_t *info;
+	snd_ctl_card_info_t info = {0};
 	const char *id;
 	int card, err;
 	
@@ -927,8 +925,7 @@ int snd_func_card_name(snd_config_t **dst, snd_config_t *root,
 		SNDERR("could not open control for card %i", card);
 		goto __error;
 	}
-	snd_ctl_card_info_alloca(&info);
-	err = snd_ctl_card_info(ctl, info);
+	err = snd_ctl_card_info(ctl, &info);
 	if (err < 0) {
 		SNDERR("snd_ctl_card_info error: %s", snd_strerror(err));
 		goto __error;
@@ -936,7 +933,7 @@ int snd_func_card_name(snd_config_t **dst, snd_config_t *root,
 	err = snd_config_get_id(src, &id);
 	if (err >= 0)
 		err = snd_config_imake_safe_string(dst, id,
-					      snd_ctl_card_info_get_name(info));
+					snd_ctl_card_info_get_name(&info));
       __error:
       	if (ctl)
       		snd_ctl_close(ctl);
@@ -972,7 +969,7 @@ int snd_func_pcm_id(snd_config_t **dst, snd_config_t *root, snd_config_t *src, v
 {
 	snd_config_t *n;
 	snd_ctl_t *ctl = NULL;
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	const char *id;
 	long card, device, subdevice = 0;
 	int err;
@@ -1012,17 +1009,17 @@ int snd_func_pcm_id(snd_config_t **dst, snd_config_t *root, snd_config_t *src, v
 		SNDERR("could not open control for card %li", card);
 		goto __error;
 	}
-	snd_pcm_info_alloca(&info);
-	snd_pcm_info_set_device(info, device);
-	snd_pcm_info_set_subdevice(info, subdevice);
-	err = snd_ctl_pcm_info(ctl, info);
+	snd_pcm_info_set_device(&info, device);
+	snd_pcm_info_set_subdevice(&info, subdevice);
+	err = snd_ctl_pcm_info(ctl, &info);
 	if (err < 0) {
 		SNDERR("snd_ctl_pcm_info error: %s", snd_strerror(err));
 		goto __error;
 	}
 	err = snd_config_get_id(src, &id);
 	if (err >= 0)
-		err = snd_config_imake_string(dst, id, snd_pcm_info_get_id(info));
+		err = snd_config_imake_string(dst, id,
+						snd_pcm_info_get_id(&info));
       __error:
       	if (ctl)
       		snd_ctl_close(ctl);
@@ -1056,7 +1053,7 @@ int snd_func_pcm_args_by_class(snd_config_t **dst, snd_config_t *root, snd_confi
 {
 	snd_config_t *n;
 	snd_ctl_t *ctl = NULL;
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	const char *id;
 	int card = -1, dev;
 	long class, index;
@@ -1094,7 +1091,6 @@ int snd_func_pcm_args_by_class(snd_config_t **dst, snd_config_t *root, snd_confi
 		goto __out;
 	}
 
-	snd_pcm_info_alloca(&info);
 	while(1) {
 		err = snd_card_next(&card);
 		if (err < 0) {
@@ -1109,7 +1105,6 @@ int snd_func_pcm_args_by_class(snd_config_t **dst, snd_config_t *root, snd_confi
 			goto __out;
 		}
 		dev = -1;
-		memset(info, 0, snd_pcm_info_sizeof());
 		while(1) {
 			err = snd_ctl_pcm_next_device(ctl, &dev);
 			if (err < 0) {
@@ -1118,11 +1113,11 @@ int snd_func_pcm_args_by_class(snd_config_t **dst, snd_config_t *root, snd_confi
 			}
 			if (dev < 0)
 				break;
-			snd_pcm_info_set_device(info, dev);
-			err = snd_ctl_pcm_info(ctl, info);
+			snd_pcm_info_set_device(&info, dev);
+			err = snd_ctl_pcm_info(ctl, &info);
 			if (err < 0)
 				continue;
-			if (snd_pcm_info_get_class(info) == (snd_pcm_class_t)class &&
+			if (snd_pcm_info_get_class(&info) == (snd_pcm_class_t)class &&
 					index == idx++)
 				goto __out;
 		}
@@ -1167,7 +1162,7 @@ SND_DLSYM_BUILD_VERSION(snd_func_pcm_args_by_class, SND_CONFIG_DLSYM_VERSION_EVA
 int snd_func_private_pcm_subdevice(snd_config_t **dst, snd_config_t *root ATTRIBUTE_UNUSED,
 				   snd_config_t *src, snd_config_t *private_data)
 {
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	const char *id;
 	const void *data;
 	snd_pcm_t *pcm;
@@ -1186,15 +1181,15 @@ int snd_func_private_pcm_subdevice(snd_config_t **dst, snd_config_t *root ATTRIB
 		SNDERR("field pcm_handle is not a pointer");
 		return err;
 	}
-	snd_pcm_info_alloca(&info);
-	err = snd_pcm_info(pcm, info);
+	err = snd_pcm_info(pcm, &info);
 	if (err < 0) {
 		SNDERR("snd_ctl_pcm_info error: %s", snd_strerror(err));
 		return err;
 	}
 	err = snd_config_get_id(src, &id);
 	if (err >= 0)
-		err = snd_config_imake_integer(dst, id, snd_pcm_info_get_subdevice(info));
+		err = snd_config_imake_integer(dst, id,
+					snd_pcm_info_get_subdevice(&info));
 	return err;
 }
 #ifndef DOC_HIDDEN

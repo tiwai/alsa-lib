@@ -30,6 +30,7 @@ cfg_files = aliases.conf \
 	FireWave.conf \
 	GUS.conf \
 	HDA-Intel.conf \
+	HdmiLpeAudio.conf \
 	ICE1712.conf \
 	ICE1724.conf \
 	ICH.conf \
@@ -39,6 +40,7 @@ cfg_files = aliases.conf \
 	Maestro3.conf \
 	NFORCE.conf \
 	PC-Speaker.conf \
+	pistachio-card.conf \
 	PMac.conf \
 	PMacToonie.conf \
 	PS3.conf \
@@ -49,6 +51,7 @@ cfg_files = aliases.conf \
 	TRID4DWAVENX.conf \
 	USB-Audio.conf \
 	YMF744.conf \
+	vc4-hdmi.conf \
 	VIA686A.conf \
 	VIA8233.conf \
 	VIA8233A.conf \

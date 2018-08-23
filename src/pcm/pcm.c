@@ -32,7 +32,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -260,8 +260,9 @@ If you like to use the compatibility functions in mmap mode, there are
 read / write routines equaling to standard read / write transfers. Using
 these functions discards the benefits of direct access to memory region.
 See the #snd_pcm_mmap_readi(),
-#snd_pcm_writei(), #snd_pcm_readn()
-and #snd_pcm_writen() functions.
+#snd_pcm_mmap_writei(), #snd_pcm_mmap_readn()
+and #snd_pcm_mmap_writen() functions. These functions use
+#snd_pcm_areas_copy() internally.
 
 \section pcm_errors Error codes
 
@@ -485,6 +486,22 @@ for hardware synchronized streams. When the #snd_pcm_link()
 function is called, all operations managing the stream state for these two
 streams are joined. The opposite function is #snd_pcm_unlink().
 
+\section pcm_thread_safety Thread-safety
+
+When the library is configured with the proper option, some PCM functions
+(e.g. #snd_pcm_avail_update()) are thread-safe and can be called concurrently
+from multiple threads.  Meanwhile, some functions (e.g. #snd_pcm_hw_params())
+aren't thread-safe, and application needs to call them carefully when they
+are called from multiple threads.  In general, all the functions that are
+often called during streaming are covered as thread-safe.
+
+This thread-safe behavior can be disabled also by passing 0 to the environment
+variable LIBASOUND_THREAD_SAFE, e.g.
+\code
+LIBASOUND_THREAD_SAFE=0 aplay foo.wav
+\endcode
+for making the debugging easier.
+
 \section pcm_dev_names PCM naming conventions
 
 The ALSA library uses a generic string representation for names of devices.
@@ -634,10 +651,51 @@ playback devices.
 #include <stdarg.h>
 #include <signal.h>
 #include <ctype.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <limits.h>
 #include "pcm_local.h"
+
+#ifndef DOC_HIDDEN
+/* return specific error codes for known bad PCM states */
+static int pcm_state_to_error(snd_pcm_state_t state)
+{
+	switch (state) {
+	case SND_PCM_STATE_XRUN:
+		return -EPIPE;
+	case SND_PCM_STATE_SUSPENDED:
+		return -ESTRPIPE;
+	case SND_PCM_STATE_DISCONNECTED:
+		return -ENODEV;
+	default:
+		return 0;
+	}
+}
+
+#define P_STATE(x)	(1U << SND_PCM_STATE_ ## x)
+#define P_STATE_RUNNABLE (P_STATE(PREPARED) | \
+			  P_STATE(RUNNING) | \
+			  P_STATE(XRUN) | \
+			  P_STATE(PAUSED) | \
+			  P_STATE(DRAINING))
+
+/* check whether the PCM is in the unexpected state */
+static int bad_pcm_state(snd_pcm_t *pcm, unsigned int supported_states)
+{
+	snd_pcm_state_t state;
+	int err;
+
+	if (pcm->own_state_check)
+		return 0; /* don't care, the plugin checks by itself */
+	state = snd_pcm_state(pcm);
+	if (supported_states & (1U << state))
+		return 0; /* OK */
+	err = pcm_state_to_error(state);
+	if (err < 0)
+		return err;
+	return -EBADFD;
+}
+#endif
 
 /**
  * \brief get identifier of PCM handle
@@ -717,25 +775,35 @@ int snd_pcm_close(snd_pcm_t *pcm)
  * \param pcm PCM handle
  * \param nonblock 0 = block, 1 = nonblock mode, 2 = abort
  * \return 0 on success otherwise a negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_nonblock(snd_pcm_t *pcm, int nonblock)
 {
-	int err;
+	int err = 0;
+
 	assert(pcm);
+	/* FIXME: __snd_pcm_lock() call below is commented out because of the
+	 * the possible deadlock in signal handler calling snd_pcm_abort()
+	 */
+	/* __snd_pcm_lock(pcm); */ /* forced lock due to pcm field change */
 	if ((err = pcm->ops->nonblock(pcm->op_arg, nonblock)) < 0)
-		return err;
+		goto unlock;
 	if (nonblock == 2) {
 		pcm->mode |= SND_PCM_ABORT;
-		return 0;
+		goto unlock;
 	}
 	if (nonblock)
 		pcm->mode |= SND_PCM_NONBLOCK;
 	else {
 		if (pcm->hw_flags & SND_PCM_HW_PARAMS_NO_PERIOD_WAKEUP)
-			return -EINVAL;
-		pcm->mode &= ~SND_PCM_NONBLOCK;
+			err = -EINVAL;
+		else
+			pcm->mode &= ~SND_PCM_NONBLOCK;
 	}
-	return 0;
+ unlock:
+	/* __snd_pcm_unlock(pcm); */ /* FIXME: see above */
+	return err;
 }
 
 #ifndef DOC_HIDDEN
@@ -755,6 +823,11 @@ int snd_pcm_async(snd_pcm_t *pcm, int sig, pid_t pid)
 		sig = SIGIO;
 	if (pid == 0)
 		pid = getpid();
+
+#ifdef THREAD_SAFE_API
+	/* async handler may lead to a deadlock; suppose no multi thread */
+	pcm->lock_enabled = 0;
+#endif
 	return pcm->ops->async(pcm->op_arg, sig, pid);
 }
 #endif
@@ -869,6 +942,8 @@ int snd_pcm_hw_free(snd_pcm_t *pcm)
  * The software parameters can be changed at any time.
  * The hardware parameters cannot be changed when the stream is
  * running (active).
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_sw_params(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 {
@@ -892,9 +967,12 @@ int snd_pcm_sw_params(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 		return -EINVAL;
 	}
 #endif
+	__snd_pcm_lock(pcm); /* forced lock due to pcm field change */
 	err = pcm->ops->sw_params(pcm->op_arg, params);
-	if (err < 0)
+	if (err < 0) {
+		__snd_pcm_unlock(pcm);
 		return err;
+	}
 	pcm->tstamp_mode = params->tstamp_mode;
 	pcm->tstamp_type = params->tstamp_type;
 	pcm->period_step = params->period_step;
@@ -905,6 +983,7 @@ int snd_pcm_sw_params(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 	pcm->silence_threshold = params->silence_threshold;
 	pcm->silence_size = params->silence_size;
 	pcm->boundary = params->boundary;
+	__snd_pcm_unlock(pcm);
 	return 0;
 }
 
@@ -913,11 +992,19 @@ int snd_pcm_sw_params(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
  * \param pcm PCM handle
  * \param status Status container
  * \return 0 on success otherwise a negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_status(snd_pcm_t *pcm, snd_pcm_status_t *status)
 {
+	int err;
+
 	assert(pcm && status);
-	return pcm->fast_ops->status(pcm->fast_op_arg, status);
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->status(pcm->fast_op_arg, status);
+	snd_pcm_unlock(pcm);
+
+	return err;
 }
 
 /**
@@ -927,11 +1014,18 @@ int snd_pcm_status(snd_pcm_t *pcm, snd_pcm_status_t *status)
  *
  * This is a faster way to obtain only the PCM state without calling
  * \link ::snd_pcm_status() \endlink.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_state_t snd_pcm_state(snd_pcm_t *pcm)
 {
+	snd_pcm_state_t state;
+
 	assert(pcm);
-	return pcm->fast_ops->state(pcm->fast_op_arg);
+	snd_pcm_lock(pcm);
+	state = __snd_pcm_state(pcm);
+	snd_pcm_unlock(pcm);
+	return state;
 }
 
 /**
@@ -942,15 +1036,22 @@ snd_pcm_state_t snd_pcm_state(snd_pcm_t *pcm)
  * Note this function does not update the actual r/w pointer
  * for applications. The function #snd_pcm_avail_update()
  * have to be called before any mmap begin+commit operation.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_hwsync(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->hwsync(pcm->fast_op_arg);
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_hwsync(pcm);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 #ifndef DOC_HIDDEN
 link_warning(snd_pcm_hwsync, "Warning: snd_pcm_hwsync() is deprecated, consider to use snd_pcm_avail()");
@@ -983,15 +1084,22 @@ link_warning(snd_pcm_hwsync, "Warning: snd_pcm_hwsync() is deprecated, consider 
  * Note this function does not update the actual r/w pointer
  * for applications. The function #snd_pcm_avail_update()
  * have to be called before any begin+commit operation.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->delay(pcm->fast_op_arg, delayp);
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_delay(pcm, delayp);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -1005,6 +1113,8 @@ int snd_pcm_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
  * to do the fine resume from this state. Not all hardware supports
  * this feature, when an -ENOSYS error is returned, use the \link ::snd_pcm_prepare() \endlink
  * function to recovery.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_resume(snd_pcm_t *pcm)
 {
@@ -1013,6 +1123,7 @@ int snd_pcm_resume(snd_pcm_t *pcm)
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
+	/* lock handled in the callback */
 	return pcm->fast_ops->resume(pcm->fast_op_arg);
 }
 
@@ -1025,30 +1136,47 @@ int snd_pcm_resume(snd_pcm_t *pcm)
  *
  * Note this function does not update the actual r/w pointer
  * for applications.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_htimestamp(snd_pcm_t *pcm, snd_pcm_uframes_t *avail, snd_htimestamp_t *tstamp)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->htimestamp(pcm->fast_op_arg, avail, tstamp);
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->htimestamp(pcm->fast_op_arg, avail, tstamp);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
  * \brief Prepare PCM for use
  * \param pcm PCM handle
  * \return 0 on success otherwise a negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_prepare(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->prepare(pcm->fast_op_arg);
+	err = bad_pcm_state(pcm, ~P_STATE(DISCONNECTED));
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->prepare(pcm->fast_op_arg);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -1057,30 +1185,47 @@ int snd_pcm_prepare(snd_pcm_t *pcm)
  * \return 0 on success otherwise a negative error code
  *
  * Reduce PCM delay to 0.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_reset(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->reset(pcm->fast_op_arg);
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->reset(pcm->fast_op_arg);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
  * \brief Start a PCM
  * \param pcm PCM handle
  * \return 0 on success otherwise a negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_start(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->start(pcm->fast_op_arg);
+	err = bad_pcm_state(pcm, P_STATE(PREPARED));
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_start(pcm);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -1093,15 +1238,26 @@ int snd_pcm_start(snd_pcm_t *pcm)
  *
  * For processing all pending samples, use \link ::snd_pcm_drain() \endlink
  * instead.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_drop(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->drop(pcm->fast_op_arg);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE | P_STATE(SETUP) |
+			    P_STATE(SUSPENDED));
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->drop(pcm->fast_op_arg);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -1116,14 +1272,22 @@ int snd_pcm_drop(snd_pcm_t *pcm)
  *
  * For stopping the PCM stream immediately, use \link ::snd_pcm_drop() \endlink
  * instead.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_drain(snd_pcm_t *pcm)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	/* lock handled in the callback */
 	return pcm->fast_ops->drain(pcm->fast_op_arg);
 }
 
@@ -1136,15 +1300,25 @@ int snd_pcm_drain(snd_pcm_t *pcm)
  * Note that this function works only on the hardware which supports
  * pause feature.  You can check it via \link ::snd_pcm_hw_params_can_pause() \endlink
  * function.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_pause(snd_pcm_t *pcm, int enable)
 {
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->pause(pcm->fast_op_arg, enable);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	err = pcm->fast_ops->pause(pcm->fast_op_arg, enable);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -1155,15 +1329,26 @@ int snd_pcm_pause(snd_pcm_t *pcm, int enable)
  * Note: The snd_pcm_rewind() can accept bigger value than returned
  * by this function. But it is not guaranteed that output stream
  * will be consistent with bigger value.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_rewindable(snd_pcm_t *pcm)
 {
+	snd_pcm_sframes_t result;
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->rewindable(pcm->fast_op_arg);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	result = pcm->fast_ops->rewindable(pcm->fast_op_arg);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 
 /**
@@ -1172,9 +1357,14 @@ snd_pcm_sframes_t snd_pcm_rewindable(snd_pcm_t *pcm)
  * \param frames wanted displacement in frames
  * \return a positive number for actual displacement otherwise a
  * negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 {
+	snd_pcm_sframes_t result;
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
@@ -1182,7 +1372,13 @@ snd_pcm_sframes_t snd_pcm_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 	}
 	if (frames == 0)
 		return 0;
-	return pcm->fast_ops->rewind(pcm->fast_op_arg, frames);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	result = pcm->fast_ops->rewind(pcm->fast_op_arg, frames);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 
 /**
@@ -1193,15 +1389,26 @@ snd_pcm_sframes_t snd_pcm_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
  * Note: The snd_pcm_forward() can accept bigger value than returned
  * by this function. But it is not guaranteed that output stream
  * will be consistent with bigger value.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_forwardable(snd_pcm_t *pcm)
 {
+	snd_pcm_sframes_t result;
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	return pcm->fast_ops->forwardable(pcm->fast_op_arg);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	result = pcm->fast_ops->forwardable(pcm->fast_op_arg);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 
 /**
@@ -1210,6 +1417,8 @@ snd_pcm_sframes_t snd_pcm_forwardable(snd_pcm_t *pcm)
  * \param frames wanted skip in frames
  * \return a positive number for actual skip otherwise a negative error code
  * \retval 0 means no action
+ *
+ * The function is thread-safe when built with the proper option.
  */
 #ifndef DOXYGEN
 snd_pcm_sframes_t INTERNAL(snd_pcm_forward)(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
@@ -1217,6 +1426,9 @@ snd_pcm_sframes_t INTERNAL(snd_pcm_forward)(snd_pcm_t *pcm, snd_pcm_uframes_t fr
 snd_pcm_sframes_t snd_pcm_forward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 #endif
 {
+	snd_pcm_sframes_t result;
+	int err;
+
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
@@ -1224,7 +1436,13 @@ snd_pcm_sframes_t snd_pcm_forward(snd_pcm_t *pcm, snd_pcm_uframes_t frames)
 	}
 	if (frames == 0)
 		return 0;
-	return pcm->fast_ops->forward(pcm->fast_op_arg, frames);
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	result = pcm->fast_ops->forward(pcm->fast_op_arg, frames);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 use_default_symbol_version(__snd_pcm_forward, snd_pcm_forward, ALSA_0.9.0rc8);
 
@@ -1244,9 +1462,13 @@ use_default_symbol_version(__snd_pcm_forward, snd_pcm_forward, ALSA_0.9.0rc8);
  * The returned number of frames can be less only if a signal or underrun occurred.
  *
  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+ *
+ * The function is thread-safe when built with the proper option.
  */ 
 snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
 {
+	int err;
+
 	assert(pcm);
 	assert(size == 0 || buffer);
 	if (CHECK_SANITY(! pcm->setup)) {
@@ -1257,6 +1479,9 @@ snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_ufr
 		SNDMSG("invalid access type %s", snd_pcm_access_name(pcm->access));
 		return -EINVAL;
 	}
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
 	return _snd_pcm_writei(pcm, buffer, size);
 }
 
@@ -1276,9 +1501,13 @@ snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_ufr
  * The returned number of frames can be less only if a signal or underrun occurred.
  *
  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+ *
+ * The function is thread-safe when built with the proper option.
  */ 
 snd_pcm_sframes_t snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
+	int err;
+
 	assert(pcm);
 	assert(size == 0 || bufs);
 	if (CHECK_SANITY(! pcm->setup)) {
@@ -1289,6 +1518,9 @@ snd_pcm_sframes_t snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t 
 		SNDMSG("invalid access type %s", snd_pcm_access_name(pcm->access));
 		return -EINVAL;
 	}
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
 	return _snd_pcm_writen(pcm, bufs, size);
 }
 
@@ -1308,9 +1540,13 @@ snd_pcm_sframes_t snd_pcm_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t 
  * if a signal or underrun occurred.
  *
  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+ *
+ * The function is thread-safe when built with the proper option.
  */ 
 snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size)
 {
+	int err;
+
 	assert(pcm);
 	assert(size == 0 || buffer);
 	if (CHECK_SANITY(! pcm->setup)) {
@@ -1321,6 +1557,9 @@ snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t 
 		SNDMSG("invalid access type %s", snd_pcm_access_name(pcm->access));
 		return -EINVAL;
 	}
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
 	return _snd_pcm_readi(pcm, buffer, size);
 }
 
@@ -1340,9 +1579,13 @@ snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t 
  * if a signal or underrun occurred.
  *
  * If the non-blocking behaviour is selected, then routine doesn't wait at all.
+ *
+ * The function is thread-safe when built with the proper option.
  */ 
 snd_pcm_sframes_t snd_pcm_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
+	int err;
+
 	assert(pcm);
 	assert(size == 0 || bufs);
 	if (CHECK_SANITY(! pcm->setup)) {
@@ -1353,6 +1596,9 @@ snd_pcm_sframes_t snd_pcm_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t s
 		SNDMSG("invalid access type %s", snd_pcm_access_name(pcm->access));
 		return -EINVAL;
 	}
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
 	return _snd_pcm_readn(pcm, bufs, size);
 }
 
@@ -1386,19 +1632,50 @@ int snd_pcm_unlink(snd_pcm_t *pcm)
 	return -ENOSYS;
 }
 
-/**
- * \brief get count of poll descriptors for PCM handle
- * \param pcm PCM handle
- * \return count of poll descriptors
- */
-int snd_pcm_poll_descriptors_count(snd_pcm_t *pcm)
+/* locked version */
+static int __snd_pcm_poll_descriptors_count(snd_pcm_t *pcm)
 {
-	assert(pcm);
 	if (pcm->fast_ops->poll_descriptors_count)
 		return pcm->fast_ops->poll_descriptors_count(pcm->fast_op_arg);
 	return pcm->poll_fd_count;
 }
 
+/**
+ * \brief get count of poll descriptors for PCM handle
+ * \param pcm PCM handle
+ * \return count of poll descriptors
+ *
+ * The function is thread-safe when built with the proper option.
+ */
+int snd_pcm_poll_descriptors_count(snd_pcm_t *pcm)
+{
+	int count;
+
+	assert(pcm);
+	snd_pcm_lock(pcm);
+	count = __snd_pcm_poll_descriptors_count(pcm);
+	snd_pcm_unlock(pcm);
+	return count;
+}
+
+/* locked version */
+static int __snd_pcm_poll_descriptors(snd_pcm_t *pcm, struct pollfd *pfds,
+				      unsigned int space)
+{
+	if (pcm->fast_ops->poll_descriptors)
+		return pcm->fast_ops->poll_descriptors(pcm->fast_op_arg, pfds, space);
+	if (pcm->poll_fd < 0) {
+		SNDMSG("poll_fd < 0");
+		return -EIO;
+	}
+	if (space >= 1 && pfds) {
+		pfds->fd = pcm->poll_fd;
+		pfds->events = pcm->poll_events | POLLERR | POLLNVAL;
+	} else {
+		return 0;
+	}
+	return 1;
+}
 
 /**
  * \brief get poll descriptors
@@ -1425,24 +1702,22 @@ int snd_pcm_poll_descriptors_count(snd_pcm_t *pcm)
  * syscall, too. Do not forget to translate POLLIN and POLLOUT events to
  * corresponding FD_SET arrays and demangle events using
  * \link ::snd_pcm_poll_descriptors_revents() \endlink .
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_poll_descriptors(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int space)
 {
+	int err;
+
 	assert(pcm && pfds);
-	if (pcm->fast_ops->poll_descriptors)
-		return pcm->fast_ops->poll_descriptors(pcm->fast_op_arg, pfds, space);
-	if (pcm->poll_fd < 0) {
-		SNDMSG("poll_fd < 0");
-		return -EIO;
-	}
-	if (space >= 1 && pfds) {
-		pfds->fd = pcm->poll_fd;
-		pfds->events = pcm->poll_events | POLLERR | POLLNVAL;
-	} else {
-		return 0;
-	}
-	return 1;
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_poll_descriptors(pcm, pfds, space);
+	snd_pcm_unlock(pcm);
+	return err;
 }
+
+static int __snd_pcm_poll_revents(snd_pcm_t *pcm, struct pollfd *pfds,
+				  unsigned int nfds, unsigned short *revents);
 
 /**
  * \brief get returned events from poll descriptors
@@ -1462,10 +1737,23 @@ int snd_pcm_poll_descriptors(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int s
  *
  * Note: Even if multiple poll descriptors are used (i.e. pfds > 1),
  * this function returns only a single event.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_poll_descriptors_revents(snd_pcm_t *pcm, struct pollfd *pfds, unsigned int nfds, unsigned short *revents)
 {
+	int err;
+
 	assert(pcm && pfds && revents);
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_poll_revents(pcm, pfds, nfds, revents);
+	snd_pcm_unlock(pcm);
+	return err;
+}
+
+static int __snd_pcm_poll_revents(snd_pcm_t *pcm, struct pollfd *pfds,
+				  unsigned int nfds, unsigned short *revents)
+{
 	if (pcm->fast_ops->poll_revents)
 		return pcm->fast_ops->poll_revents(pcm->fast_op_arg, pfds, nfds, revents);
 	if (nfds == 1) {
@@ -1546,6 +1834,10 @@ static const char *const snd_pcm_format_names[] = {
 	FORMAT(IMA_ADPCM),
 	FORMAT(MPEG),
 	FORMAT(GSM),
+	FORMAT(S20_LE),
+	FORMAT(S20_BE),
+	FORMAT(U20_LE),
+	FORMAT(U20_BE),
 	FORMAT(SPECIAL),
 	FORMAT(S24_3LE),
 	FORMAT(S24_3BE),
@@ -1580,6 +1872,8 @@ static const char *const snd_pcm_format_aliases[SND_PCM_FORMAT_LAST+1] = {
 	FORMAT(FLOAT),
 	FORMAT(FLOAT64),
 	FORMAT(IEC958_SUBFRAME),
+	FORMAT(S20),
+	FORMAT(U20),
 };
 
 static const char *const snd_pcm_format_descriptions[] = {
@@ -1608,6 +1902,10 @@ static const char *const snd_pcm_format_descriptions[] = {
 	FORMATD(IMA_ADPCM, "Ima-ADPCM"),
 	FORMATD(MPEG, "MPEG"),
 	FORMATD(GSM, "GSM"),
+	FORMATD(S20_LE, "Signed 20 bit Little Endian in 4 bytes, LSB justified"),
+	FORMATD(S20_BE, "Signed 20 bit Big Endian in 4 bytes, LSB justified"),
+	FORMATD(U20_LE, "Unsigned 20 bit Little Endian in 4 bytes, LSB justified"),
+	FORMATD(U20_BE, "Unsigned 20 bit Big Endian in 4 bytes, LSB justified"),
 	FORMATD(SPECIAL, "Special"),
 	FORMATD(S24_3LE, "Signed 24 bit Little Endian in 3bytes"),
 	FORMATD(S24_3BE, "Signed 24 bit Big Endian in 3bytes"),
@@ -1960,9 +2258,10 @@ int snd_pcm_status_dump(snd_pcm_status_t *status, snd_output_t *out)
 	assert(status);
 	snd_output_printf(out, "  state       : %s\n", snd_pcm_state_name((snd_pcm_state_t) status->state));
 	snd_output_printf(out, "  trigger_time: %ld.%06ld\n",
-		status->trigger_tstamp.tv_sec, status->trigger_tstamp.tv_nsec);
+			  status->trigger_tstamp.tv_sec,
+			  status->trigger_tstamp.tv_nsec / 1000);
 	snd_output_printf(out, "  tstamp      : %ld.%06ld\n",
-		status->tstamp.tv_sec, status->tstamp.tv_nsec);
+		status->tstamp.tv_sec, status->tstamp.tv_nsec / 1000);
 	snd_output_printf(out, "  delay       : %ld\n", (long)status->delay);
 	snd_output_printf(out, "  avail       : %ld\n", (long)status->avail);
 	snd_output_printf(out, "  avail_max   : %ld\n", (long)status->avail_max);
@@ -2346,6 +2645,10 @@ int snd_pcm_new(snd_pcm_t **pcmp, snd_pcm_type_t type, const char *name,
 		snd_pcm_stream_t stream, int mode)
 {
 	snd_pcm_t *pcm;
+#ifdef THREAD_SAFE_API
+	pthread_mutexattr_t attr;
+#endif
+
 	pcm = calloc(1, sizeof(*pcm));
 	if (!pcm)
 		return -ENOMEM;
@@ -2359,6 +2662,31 @@ int snd_pcm_new(snd_pcm_t **pcmp, snd_pcm_type_t type, const char *name,
 	pcm->op_arg = pcm;
 	pcm->fast_op_arg = pcm;
 	INIT_LIST_HEAD(&pcm->async_handlers);
+#ifdef THREAD_SAFE_API
+	pthread_mutexattr_init(&attr);
+#ifdef HAVE_PTHREAD_MUTEX_RECURSIVE
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+#endif
+	pthread_mutex_init(&pcm->lock, &attr);
+	/* use locking as default;
+	 * each plugin may suppress this in its open call
+	 */
+	pcm->need_lock = 1;
+	if (mode & SND_PCM_ASYNC) {
+		/* async handler may lead to a deadlock; suppose no MT */
+		pcm->lock_enabled = 0;
+	} else {
+		/* set lock_enabled field depending on $LIBASOUND_THREAD_SAFE */
+		static int do_lock_enable = -1; /* uninitialized */
+
+		/* evaluate env var only once at the first open for consistency */
+		if (do_lock_enable == -1) {
+			char *p = getenv("LIBASOUND_THREAD_SAFE");
+			do_lock_enable = !p || *p != '0';
+		}
+		pcm->lock_enabled = do_lock_enable;
+	}
+#endif
 	*pcmp = pcm;
 	return 0;
 }
@@ -2370,6 +2698,9 @@ int snd_pcm_free(snd_pcm_t *pcm)
 	free(pcm->hw.link_dst);
 	free(pcm->appl.link_dst);
 	snd_dlobj_cache_put(pcm->open_func);
+#ifdef THREAD_SAFE_API
+	pthread_mutex_destroy(&pcm->lock);
+#endif
 	free(pcm);
 	return 0;
 }
@@ -2401,30 +2732,41 @@ int snd_pcm_open_named_slave(snd_pcm_t **pcmp, const char *name,
  *          others for general errors) 
  * \retval 0 timeout occurred
  * \retval 1 PCM stream is ready for I/O
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_wait(snd_pcm_t *pcm, int timeout)
 {
-	if (!snd_pcm_may_wait_for_avail_min(pcm, snd_pcm_mmap_avail(pcm))) {
+	int err;
+
+	__snd_pcm_lock(pcm); /* forced lock */
+	err = __snd_pcm_wait_in_lock(pcm, timeout);
+	__snd_pcm_unlock(pcm);
+	return err;
+}
+
+#ifndef DOC_HIDDEN
+/* locked version */
+int __snd_pcm_wait_in_lock(snd_pcm_t *pcm, int timeout)
+{
+	int err;
+
+	/* NOTE: avail_min check can be skipped during draining */
+	if (__snd_pcm_state(pcm) != SND_PCM_STATE_DRAINING &&
+	    !snd_pcm_may_wait_for_avail_min(pcm, snd_pcm_mmap_avail(pcm))) {
 		/* check more precisely */
-		switch (snd_pcm_state(pcm)) {
-		case SND_PCM_STATE_XRUN:
-			return -EPIPE;
-		case SND_PCM_STATE_SUSPENDED:
-			return -ESTRPIPE;
-		case SND_PCM_STATE_DISCONNECTED:
-			return -ENODEV;
-		default:
-			return 1;
-		}
+		err = pcm_state_to_error(__snd_pcm_state(pcm));
+		return err < 0 ? err : 1;
 	}
 	return snd_pcm_wait_nocheck(pcm, timeout);
 }
 
-#ifndef DOC_HIDDEN
 /* 
  * like snd_pcm_wait() but doesn't check mmap_avail before calling poll()
  *
  * used in drain code in some plugins
+ *
+ * This function is called inside pcm lock.
  */
 int snd_pcm_wait_nocheck(snd_pcm_t *pcm, int timeout)
 {
@@ -2432,13 +2774,13 @@ int snd_pcm_wait_nocheck(snd_pcm_t *pcm, int timeout)
 	unsigned short revents = 0;
 	int npfds, err, err_poll;
 	
-	npfds = snd_pcm_poll_descriptors_count(pcm);
+	npfds = __snd_pcm_poll_descriptors_count(pcm);
 	if (npfds <= 0 || npfds >= 16) {
 		SNDERR("Invalid poll_fds %d\n", npfds);
 		return -EIO;
 	}
 	pfd = alloca(sizeof(*pfd) * npfds);
-	err = snd_pcm_poll_descriptors(pcm, pfd, npfds);
+	err = __snd_pcm_poll_descriptors(pcm, pfd, npfds);
 	if (err < 0)
 		return err;
 	if (err != npfds) {
@@ -2446,7 +2788,9 @@ int snd_pcm_wait_nocheck(snd_pcm_t *pcm, int timeout)
 		return -EIO;
 	}
 	do {
+		__snd_pcm_unlock(pcm);
 		err_poll = poll(pfd, npfds, timeout);
+		__snd_pcm_lock(pcm);
 		if (err_poll < 0) {
 		        if (errno == EINTR && !PCMINABORT(pcm))
 		                continue;
@@ -2454,28 +2798,20 @@ int snd_pcm_wait_nocheck(snd_pcm_t *pcm, int timeout)
                 }
 		if (! err_poll)
 			break;
-		err = snd_pcm_poll_descriptors_revents(pcm, pfd, npfds, &revents);
+		err = __snd_pcm_poll_revents(pcm, pfd, npfds, &revents);
 		if (err < 0)
 			return err;
 		if (revents & (POLLERR | POLLNVAL)) {
 			/* check more precisely */
-			switch (snd_pcm_state(pcm)) {
-			case SND_PCM_STATE_XRUN:
-				return -EPIPE;
-			case SND_PCM_STATE_SUSPENDED:
-				return -ESTRPIPE;
-			case SND_PCM_STATE_DISCONNECTED:
-				return -ENODEV;
-			default:
-				return -EIO;
-			}
+			err = pcm_state_to_error(__snd_pcm_state(pcm));
+			return err < 0 ? err : -EIO;
 		}
 	} while (!(revents & (POLLIN | POLLOUT)));
 #if 0 /* very useful code to test poll related problems */
 	{
 		snd_pcm_sframes_t avail_update;
-		snd_pcm_hwsync(pcm);
-		avail_update = snd_pcm_avail_update(pcm);
+		__snd_pcm_hwsync(pcm);
+		avail_update = __snd_pcm_avail_update(pcm);
 		if (avail_update < (snd_pcm_sframes_t)pcm->avail_min) {
 			printf("*** snd_pcm_wait() FATAL ERROR!!!\n");
 			printf("avail_min = %li, avail_update = %li\n", pcm->avail_min, avail_update);
@@ -2506,10 +2842,17 @@ int snd_pcm_wait_nocheck(snd_pcm_t *pcm, int timeout)
  * Also this function might be called after #snd_pcm_delay() or
  * #snd_pcm_hwsync() functions to move private ring buffer pointers
  * in alsa-lib (the internal plugin chain).
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t *pcm)
 {
-	return pcm->fast_ops->avail_update(pcm->fast_op_arg);
+	snd_pcm_sframes_t result;
+
+	snd_pcm_lock(pcm);
+	result = __snd_pcm_avail_update(pcm);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 
 /**
@@ -2523,20 +2866,27 @@ snd_pcm_sframes_t snd_pcm_avail_update(snd_pcm_t *pcm)
  *
  * The position is synced with hardware (driver) position in the sound
  * ring buffer in this functions.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_avail(snd_pcm_t *pcm)
 {
 	int err;
+	snd_pcm_sframes_t result;
 
 	assert(pcm);
 	if (CHECK_SANITY(! pcm->setup)) {
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	err = pcm->fast_ops->hwsync(pcm->fast_op_arg);
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_hwsync(pcm);
 	if (err < 0)
-		return err;
-	return pcm->fast_ops->avail_update(pcm->fast_op_arg);
+		result = err;
+	else
+		result = __snd_pcm_avail_update(pcm);
+	snd_pcm_unlock(pcm);
+	return result;
 }
 
 /**
@@ -2547,6 +2897,8 @@ snd_pcm_sframes_t snd_pcm_avail(snd_pcm_t *pcm)
  * \return zero on success otherwise a negative error code
  *
  * The avail and delay values retuned are in sync.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_avail_delay(snd_pcm_t *pcm,
 			snd_pcm_sframes_t *availp,
@@ -2560,17 +2912,23 @@ int snd_pcm_avail_delay(snd_pcm_t *pcm,
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
-	err = pcm->fast_ops->hwsync(pcm->fast_op_arg);
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_hwsync(pcm);
 	if (err < 0)
-		return err;
-	sf = pcm->fast_ops->avail_update(pcm->fast_op_arg);
-	if (sf < 0)
-		return (int)sf;
-	err = pcm->fast_ops->delay(pcm->fast_op_arg, delayp);
+		goto unlock;
+	sf = __snd_pcm_avail_update(pcm);
+	if (sf < 0) {
+		err = (int)sf;
+		goto unlock;
+	}
+	err = __snd_pcm_delay(pcm, delayp);
 	if (err < 0)
-		return err;
+		goto unlock;
 	*availp = sf;
-	return 0;
+	err = 0;
+ unlock:
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 /**
@@ -2588,26 +2946,33 @@ int snd_pcm_area_silence(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes
 	char *dst;
 	unsigned int dst_step;
 	int width;
-	u_int64_t silence;
+	uint64_t silence;
 	if (!dst_area->addr)
 		return 0;
 	dst = snd_pcm_channel_area_addr(dst_area, dst_offset);
 	width = snd_pcm_format_physical_width(format);
 	silence = snd_pcm_format_silence_64(format);
-	if (dst_area->step == (unsigned int) width) {
+        /*
+         * Iterate copying silent sample for sample data aligned to 64 bit.
+         * This is a fast path.
+         */
+        if (dst_area->step == (unsigned int) width &&
+            width != 24 &&
+            ((intptr_t)dst & 7) == 0) {
 		unsigned int dwords = samples * width / 64;
-		u_int64_t *dstp = (u_int64_t *)dst;
+		uint64_t *dstp = (uint64_t *)dst;
 		samples -= dwords * 64 / width;
 		while (dwords-- > 0)
 			*dstp++ = silence;
 		if (samples == 0)
 			return 0;
+		dst = (char *)dstp;
 	}
 	dst_step = dst_area->step / 8;
 	switch (width) {
 	case 4: {
-		u_int8_t s0 = silence & 0xf0;
-		u_int8_t s1 = silence & 0x0f;
+		uint8_t s0 = silence & 0xf0;
+		uint8_t s1 = silence & 0x0f;
 		int dstbit = dst_area->first % 8;
 		int dstbit_step = dst_area->step % 8;
 		while (samples-- > 0) {
@@ -2628,7 +2993,7 @@ int snd_pcm_area_silence(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes
 		break;
 	}
 	case 8: {
-		u_int8_t sil = silence;
+		uint8_t sil = silence;
 		while (samples-- > 0) {
 			*dst = sil;
 			dst += dst_step;
@@ -2636,35 +3001,39 @@ int snd_pcm_area_silence(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes
 		break;
 	}
 	case 16: {
-		u_int16_t sil = silence;
+		uint16_t sil = silence;
 		while (samples-- > 0) {
-			*(u_int16_t*)dst = sil;
+			*(uint16_t*)dst = sil;
 			dst += dst_step;
 		}
 		break;
 	}
-	case 24:
+	case 24: {
+		while (samples-- > 0) {
 #ifdef SNDRV_LITTLE_ENDIAN
-		*(dst + 0) = silence >> 0;
-		*(dst + 1) = silence >> 8;
-		*(dst + 2) = silence >> 16;
+			*(dst + 0) = silence >> 0;
+			*(dst + 1) = silence >> 8;
+			*(dst + 2) = silence >> 16;
 #else
-		*(dst + 2) = silence >> 0;
-		*(dst + 1) = silence >> 8;
-		*(dst + 0) = silence >> 16;
+			*(dst + 2) = silence >> 0;
+			*(dst + 1) = silence >> 8;
+			*(dst + 0) = silence >> 16;
 #endif
+			dst += dst_step;
+		}
+	}
 		break;
 	case 32: {
-		u_int32_t sil = silence;
+		uint32_t sil = silence;
 		while (samples-- > 0) {
-			*(u_int32_t*)dst = sil;
+			*(uint32_t*)dst = sil;
 			dst += dst_step;
 		}
 		break;
 	}
 	case 64: {
 		while (samples-- > 0) {
-			*(u_int64_t*)dst = silence;
+			*(uint64_t*)dst = silence;
 			dst += dst_step;
 		}
 		break;
@@ -2808,7 +3177,7 @@ int snd_pcm_area_copy(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes_t 
 	}
 	case 16: {
 		while (samples-- > 0) {
-			*(u_int16_t*)dst = *(const u_int16_t*)src;
+			*(uint16_t*)dst = *(const uint16_t*)src;
 			src += src_step;
 			dst += dst_step;
 		}
@@ -2825,7 +3194,7 @@ int snd_pcm_area_copy(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes_t 
 		break;
 	case 32: {
 		while (samples-- > 0) {
-			*(u_int32_t*)dst = *(const u_int32_t*)src;
+			*(uint32_t*)dst = *(const uint32_t*)src;
 			src += src_step;
 			dst += dst_step;
 		}
@@ -2833,7 +3202,7 @@ int snd_pcm_area_copy(const snd_pcm_channel_area_t *dst_area, snd_pcm_uframes_t 
 	}
 	case 64: {
 		while (samples-- > 0) {
-			*(u_int64_t*)dst = *(const u_int64_t*)src;
+			*(uint64_t*)dst = *(const uint64_t*)src;
 			src += src_step;
 			dst += dst_step;
 		}
@@ -2919,6 +3288,55 @@ int snd_pcm_areas_copy(const snd_pcm_channel_area_t *dst_areas, snd_pcm_uframes_
 			channels--;
 		}
 	}
+	return 0;
+}
+
+/**
+ * \brief Copy one or more areas
+ * \param dst_areas destination areas specification (one for each channel)
+ * \param dst_offset offset in frames inside destination area
+ * \param dst_size size in frames of the destination buffer
+ * \param src_areas source areas specification (one for each channel)
+ * \param src_offset offset in frames inside source area
+ * \param dst_size size in frames of the source buffer
+ * \param channels channels count
+ * \param frames frames to copy
+ * \param format PCM sample format
+ * \return 0 on success otherwise a negative error code
+ */
+int snd_pcm_areas_copy_wrap(const snd_pcm_channel_area_t *dst_channels,
+			    snd_pcm_uframes_t dst_offset,
+			    const snd_pcm_uframes_t dst_size,
+			    const snd_pcm_channel_area_t *src_channels,
+			    snd_pcm_uframes_t src_offset,
+			    const snd_pcm_uframes_t src_size,
+			    const unsigned int channels,
+			    snd_pcm_uframes_t frames,
+			    const snd_pcm_format_t format)
+{
+	while (frames > 0) {
+		int err;
+		snd_pcm_uframes_t xfer = frames;
+		/* do not write above the destination buffer */
+		if ((dst_offset + xfer) > dst_size)
+			xfer = dst_size - dst_offset;
+		/* do not read from above the source buffer */
+		if ((src_offset + xfer) > src_size)
+			xfer = src_size - src_offset;
+		err = snd_pcm_areas_copy(dst_channels, dst_offset, src_channels,
+					 src_offset, channels, xfer, format);
+		if (err < 0)
+			return err;
+
+		dst_offset += xfer;
+		if (dst_offset >= dst_size)
+			dst_offset = 0;
+		src_offset += xfer;
+		if (src_offset >= src_size)
+			src_offset = 0;
+		frames -= xfer;
+	}
+
 	return 0;
 }
 
@@ -5646,6 +6064,8 @@ int snd_pcm_hw_params_get_min_align(const snd_pcm_hw_params_t *params, snd_pcm_u
  * \param pcm PCM handle
  * \param params Software configuration container
  * \return 0 on success otherwise a negative error code
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_sw_params_current(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 {
@@ -5654,6 +6074,7 @@ int snd_pcm_sw_params_current(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 		SNDMSG("PCM not set up");
 		return -EIO;
 	}
+	__snd_pcm_lock(pcm); /* forced lock due to pcm field changes */
 	params->proto = SNDRV_PCM_VERSION;
 	params->tstamp_mode = pcm->tstamp_mode;
 	params->tstamp_type = pcm->tstamp_type;
@@ -5667,6 +6088,7 @@ int snd_pcm_sw_params_current(snd_pcm_t *pcm, snd_pcm_sw_params_t *params)
 	params->silence_threshold = pcm->silence_threshold;
 	params->silence_size = pcm->silence_size;
 	params->boundary = pcm->boundary;
+	__snd_pcm_unlock(pcm);
 	return 0;
 }
 
@@ -6680,11 +7102,29 @@ void snd_pcm_info_set_stream(snd_pcm_info_t *obj, snd_pcm_stream_t val)
  *
  * See the snd_pcm_mmap_commit() function to finish the frame processing in
  * the direct areas.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 int snd_pcm_mmap_begin(snd_pcm_t *pcm,
 		       const snd_pcm_channel_area_t **areas,
 		       snd_pcm_uframes_t *offset,
 		       snd_pcm_uframes_t *frames)
+{
+	int err;
+
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_mmap_begin(pcm, areas, offset, frames);
+	snd_pcm_unlock(pcm);
+	return err;
+}
+
+#ifndef DOC_HIDDEN
+/* locked version */
+int __snd_pcm_mmap_begin(snd_pcm_t *pcm, const snd_pcm_channel_area_t **areas,
+		       snd_pcm_uframes_t *offset, snd_pcm_uframes_t *frames)
 {
 	snd_pcm_uframes_t cont;
 	snd_pcm_uframes_t f;
@@ -6708,6 +7148,7 @@ int snd_pcm_mmap_begin(snd_pcm_t *pcm,
 	*frames = f;
 	return 0;
 }
+#endif
 
 /**
  * \brief Application has completed the access to area requested with #snd_pcm_mmap_begin
@@ -6760,10 +7201,30 @@ int snd_pcm_mmap_begin(snd_pcm_t *pcm,
  *
  * Look to the \ref example_test_pcm "Sine-wave generator" example
  * for more details about the generate_sine function.
+ *
+ * The function is thread-safe when built with the proper option.
  */
 snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *pcm,
 				      snd_pcm_uframes_t offset,
 				      snd_pcm_uframes_t frames)
+{
+	snd_pcm_sframes_t result;
+	int err;
+
+	err = bad_pcm_state(pcm, P_STATE_RUNNABLE);
+	if (err < 0)
+		return err;
+	snd_pcm_lock(pcm);
+	result = __snd_pcm_mmap_commit(pcm, offset, frames);
+	snd_pcm_unlock(pcm);
+	return result;
+}
+
+#ifndef DOC_HIDDEN
+/* locked version*/
+snd_pcm_sframes_t __snd_pcm_mmap_commit(snd_pcm_t *pcm,
+					snd_pcm_uframes_t offset,
+					snd_pcm_uframes_t frames)
 {
 	assert(pcm);
 	if (CHECK_SANITY(offset != *pcm->appl.ptr % pcm->buffer_size)) {
@@ -6779,8 +7240,6 @@ snd_pcm_sframes_t snd_pcm_mmap_commit(snd_pcm_t *pcm,
 	return pcm->fast_ops->mmap_commit(pcm->fast_op_arg, offset, frames);
 }
 
-#ifndef DOC_HIDDEN
-
 int _snd_pcm_poll_descriptor(snd_pcm_t *pcm)
 {
 	assert(pcm);
@@ -6791,24 +7250,32 @@ void snd_pcm_areas_from_buf(snd_pcm_t *pcm, snd_pcm_channel_area_t *areas,
 			    void *buf)
 {
 	unsigned int channel;
-	unsigned int channels = pcm->channels;
+	unsigned int channels;
+
+	snd_pcm_lock(pcm);
+	channels = pcm->channels;
 	for (channel = 0; channel < channels; ++channel, ++areas) {
 		areas->addr = buf;
 		areas->first = channel * pcm->sample_bits;
 		areas->step = pcm->frame_bits;
 	}
+	snd_pcm_unlock(pcm);
 }
 
 void snd_pcm_areas_from_bufs(snd_pcm_t *pcm, snd_pcm_channel_area_t *areas, 
 			     void **bufs)
 {
 	unsigned int channel;
-	unsigned int channels = pcm->channels;
+	unsigned int channels;
+
+	snd_pcm_lock(pcm);
+	channels = pcm->channels;
 	for (channel = 0; channel < channels; ++channel, ++areas, ++bufs) {
 		areas->addr = *bufs;
 		areas->first = 0;
 		areas->step = pcm->sample_bits;
 	}
+	snd_pcm_unlock(pcm);
 }
 
 snd_pcm_sframes_t snd_pcm_read_areas(snd_pcm_t *pcm, const snd_pcm_channel_area_t *areas,
@@ -6822,39 +7289,33 @@ snd_pcm_sframes_t snd_pcm_read_areas(snd_pcm_t *pcm, const snd_pcm_channel_area_
 	if (size == 0)
 		return 0;
 
+	__snd_pcm_lock(pcm); /* forced lock */
 	while (size > 0) {
 		snd_pcm_uframes_t frames;
 		snd_pcm_sframes_t avail;
 	_again:
-		state = snd_pcm_state(pcm);
+		state = __snd_pcm_state(pcm);
 		switch (state) {
 		case SND_PCM_STATE_PREPARED:
-			err = snd_pcm_start(pcm);
+			err = __snd_pcm_start(pcm);
 			if (err < 0)
 				goto _end;
 			break;
 		case SND_PCM_STATE_RUNNING:
-			err = snd_pcm_hwsync(pcm);
+			err = __snd_pcm_hwsync(pcm);
 			if (err < 0)
 				goto _end;
 			break;
 		case SND_PCM_STATE_DRAINING:
 		case SND_PCM_STATE_PAUSED:
 			break;
-		case SND_PCM_STATE_XRUN:
-			err = -EPIPE;
-			goto _end;
-		case SND_PCM_STATE_SUSPENDED:
-			err = -ESTRPIPE;
-			goto _end;
-		case SND_PCM_STATE_DISCONNECTED:
-			err = -ENODEV;
-			goto _end;
 		default:
-			err = -EBADFD;
+			err = pcm_state_to_error(state);
+			if (!err)
+				err = -EBADFD;
 			goto _end;
 		}
-		avail = snd_pcm_avail_update(pcm);
+		avail = __snd_pcm_avail_update(pcm);
 		if (avail < 0) {
 			err = avail;
 			goto _end;
@@ -6867,7 +7328,7 @@ snd_pcm_sframes_t snd_pcm_read_areas(snd_pcm_t *pcm, const snd_pcm_channel_area_
 				goto _end;
 			}
 
-			err = snd_pcm_wait(pcm, -1);
+			err = __snd_pcm_wait_in_lock(pcm, -1);
 			if (err < 0)
 				break;
 			goto _again;
@@ -6887,6 +7348,7 @@ snd_pcm_sframes_t snd_pcm_read_areas(snd_pcm_t *pcm, const snd_pcm_channel_area_
 		xfer += frames;
 	}
  _end:
+	__snd_pcm_unlock(pcm);
 	return xfer > 0 ? (snd_pcm_sframes_t) xfer : snd_pcm_check_error(pcm, err);
 }
 
@@ -6901,34 +7363,28 @@ snd_pcm_sframes_t snd_pcm_write_areas(snd_pcm_t *pcm, const snd_pcm_channel_area
 	if (size == 0)
 		return 0;
 
+	__snd_pcm_lock(pcm); /* forced lock */
 	while (size > 0) {
 		snd_pcm_uframes_t frames;
 		snd_pcm_sframes_t avail;
 	_again:
-		state = snd_pcm_state(pcm);
+		state = __snd_pcm_state(pcm);
 		switch (state) {
 		case SND_PCM_STATE_PREPARED:
 		case SND_PCM_STATE_PAUSED:
 			break;
 		case SND_PCM_STATE_RUNNING:
-			err = snd_pcm_hwsync(pcm);
+			err = __snd_pcm_hwsync(pcm);
 			if (err < 0)
 				goto _end;
 			break;
-		case SND_PCM_STATE_XRUN:
-			err = -EPIPE;
-			goto _end;
-		case SND_PCM_STATE_SUSPENDED:
-			err = -ESTRPIPE;
-			goto _end;
-		case SND_PCM_STATE_DISCONNECTED:
-			err = -ENODEV;
-			goto _end;
 		default:
-			err = -EBADFD;
+			err = pcm_state_to_error(state);
+			if (!err)
+				err = -EBADFD;
 			goto _end;
 		}
-		avail = snd_pcm_avail_update(pcm);
+		avail = __snd_pcm_avail_update(pcm);
 		if (avail < 0) {
 			err = avail;
 			goto _end;
@@ -6959,10 +7415,10 @@ snd_pcm_sframes_t snd_pcm_write_areas(snd_pcm_t *pcm, const snd_pcm_channel_area
 			snd_pcm_sframes_t hw_avail = pcm->buffer_size - avail;
 			hw_avail += frames;
 			/* some plugins might automatically start the stream */
-			state = snd_pcm_state(pcm);
+			state = __snd_pcm_state(pcm);
 			if (state == SND_PCM_STATE_PREPARED &&
 			    hw_avail >= (snd_pcm_sframes_t) pcm->start_threshold) {
-				err = snd_pcm_start(pcm);
+				err = __snd_pcm_start(pcm);
 				if (err < 0)
 					goto _end;
 			}
@@ -6972,6 +7428,7 @@ snd_pcm_sframes_t snd_pcm_write_areas(snd_pcm_t *pcm, const snd_pcm_channel_area
 		xfer += frames;
 	}
  _end:
+	__snd_pcm_unlock(pcm);
 	return xfer > 0 ? (snd_pcm_sframes_t) xfer : snd_pcm_check_error(pcm, err);
 }
 
@@ -8007,142 +8464,175 @@ int snd_pcm_set_params(snd_pcm_t *pcm,
                        int soft_resample,
                        unsigned int latency)
 {
-        snd_pcm_hw_params_t *params, params_saved;
-        snd_pcm_sw_params_t *swparams;
-        const char *s = snd_pcm_stream_name(snd_pcm_stream(pcm));
-        snd_pcm_uframes_t buffer_size, period_size;
-        unsigned int rrate, period_time;
-        int err;
-
-        snd_pcm_hw_params_alloca(&params);
-        snd_pcm_sw_params_alloca(&swparams);
+	snd_pcm_hw_params_t params_saved, params = {0};
+	snd_pcm_sw_params_t swparams = {0};
+	const char *s = snd_pcm_stream_name(snd_pcm_stream(pcm));
+	snd_pcm_uframes_t buffer_size, period_size;
+	unsigned int rrate, period_time;
+	int err;
 
 	assert(pcm);
 	/* choose all parameters */
-	err = snd_pcm_hw_params_any(pcm, params);
+	err = snd_pcm_hw_params_any(pcm, &params);
 	if (err < 0) {
-	        SNDERR("Broken configuration for %s: no configurations available", s);
-	        return err;
+		SNDERR("Broken configuration for %s: no configurations available",
+		       s);
+		return err;
         }
-        /* set software resampling */
-        err = snd_pcm_hw_params_set_rate_resample(pcm, params, soft_resample);
-        if (err < 0) {
-                SNDERR("Resampling setup failed for %s: %s", s, snd_strerror(err));
-                return err;
-        }
+	/* set software resampling */
+	err = snd_pcm_hw_params_set_rate_resample(pcm, &params, soft_resample);
+	if (err < 0) {
+		SNDERR("Resampling setup failed for %s: %s",
+		       s, snd_strerror(err));
+		return err;
+	}
 	/* set the selected read/write format */
-	err = snd_pcm_hw_params_set_access(pcm, params, access);
+	err = snd_pcm_hw_params_set_access(pcm, &params, access);
 	if (err < 0) {
-		SNDERR("Access type not available for %s: %s", s, snd_strerror(err));
+		SNDERR("Access type not available for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
 	/* set the sample format */
-	err = snd_pcm_hw_params_set_format(pcm, params, format);
+	err = snd_pcm_hw_params_set_format(pcm, &params, format);
 	if (err < 0) {
-		SNDERR("Sample format not available for %s: %s", s, snd_strerror(err));
+		SNDERR("Sample format not available for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
 	/* set the count of channels */
-	err = snd_pcm_hw_params_set_channels(pcm, params, channels);
+	err = snd_pcm_hw_params_set_channels(pcm, &params, channels);
 	if (err < 0) {
-		SNDERR("Channels count (%i) not available for %s: %s", channels, s, snd_strerror(err));
+		SNDERR("Channels count (%i) not available for %s: %s",
+		       channels, s, snd_strerror(err));
 		return err;
 	}
 	/* set the stream rate */
 	rrate = rate;
-	err = INTERNAL(snd_pcm_hw_params_set_rate_near)(pcm, params, &rrate, 0);
+	err = INTERNAL(snd_pcm_hw_params_set_rate_near)(pcm, &params, &rrate,
+							0);
 	if (err < 0) {
-		SNDERR("Rate %iHz not available for playback: %s", rate, snd_strerror(err));
+		SNDERR("Rate %iHz not available for playback: %s",
+		       rate, snd_strerror(err));
 		return err;
 	}
 	if (rrate != rate) {
-		SNDERR("Rate doesn't match (requested %iHz, get %iHz)", rate, rrate);
+		SNDERR("Rate doesn't match (requested %iHz, get %iHz)",
+		       rate, rrate);
 		return -EINVAL;
 	}
 	/* set the buffer time */
-	params_saved = *params;
-	err = INTERNAL(snd_pcm_hw_params_set_buffer_time_near)(pcm, params, &latency, NULL);
+	params_saved = params;
+	err = INTERNAL(snd_pcm_hw_params_set_buffer_time_near)(pcm, &params,
+							&latency, NULL);
 	if (err < 0) {
-	        /* error path -> set period size as first */
-		*params = params_saved;
-        	/* set the period time */
-        	period_time = latency / 4;
-        	err = INTERNAL(snd_pcm_hw_params_set_period_time_near)(pcm, params, &period_time, NULL);
-        	if (err < 0) {
-        		SNDERR("Unable to set period time %i for %s: %s", period_time, s, snd_strerror(err));
-        		return err;
-        	}
-                err = INTERNAL(snd_pcm_hw_params_get_period_size)(params, &period_size, NULL);
-                if (err < 0) {
-                	SNDERR("Unable to get period size for %s: %s", s, snd_strerror(err));
-                	return err;
-        	}
-        	buffer_size = period_size * 4;
-        	err = INTERNAL(snd_pcm_hw_params_set_buffer_size_near)(pcm, params, &buffer_size);
-                if (err < 0) {
-                	SNDERR("Unable to set buffer size %lu %s: %s", buffer_size, s, snd_strerror(err));
-                	return err;
-        	}
-        	err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(params, &buffer_size);
-        	if (err < 0) {
-        		SNDERR("Unable to get buffer size for %s: %s", s, snd_strerror(err));
-        		return err;
-        	}
+		/* error path -> set period size as first */
+		params = params_saved;
+		/* set the period time */
+		period_time = latency / 4;
+		err = INTERNAL(snd_pcm_hw_params_set_period_time_near)(pcm,
+						&params, &period_time, NULL);
+		if (err < 0) {
+			SNDERR("Unable to set period time %i for %s: %s",
+			       period_time, s, snd_strerror(err));
+			return err;
+		}
+		err = INTERNAL(snd_pcm_hw_params_get_period_size)(&params,
+							&period_size, NULL);
+		if (err < 0) {
+			SNDERR("Unable to get period size for %s: %s",
+							s, snd_strerror(err));
+			return err;
+		}
+		buffer_size = period_size * 4;
+		err = INTERNAL(snd_pcm_hw_params_set_buffer_size_near)(pcm,
+							&params, &buffer_size);
+		if (err < 0) {
+			SNDERR("Unable to set buffer size %lu %s: %s",
+					buffer_size, s, snd_strerror(err));
+			return err;
+		}
+		err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(&params,
+								&buffer_size);
+		if (err < 0) {
+			SNDERR("Unable to get buffer size for %s: %s",
+			       s, snd_strerror(err));
+			return err;
+		}
 	} else {
-	        /* standard configuration buffer_time -> periods */
-        	err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(params, &buffer_size);
-        	if (err < 0) {
-        		SNDERR("Unable to get buffer size for %s: %s", s, snd_strerror(err));
-        		return err;
-        	}
-        	err = INTERNAL(snd_pcm_hw_params_get_buffer_time)(params, &latency, NULL);
-        	if (err < 0) {
-        		SNDERR("Unable to get buffer time (latency) for %s: %s", s, snd_strerror(err));
-        		return err;
-        	}
-        	/* set the period time */
-        	period_time = latency / 4;
-        	err = INTERNAL(snd_pcm_hw_params_set_period_time_near)(pcm, params, &period_time, NULL);
-        	if (err < 0) {
-        		SNDERR("Unable to set period time %i for %s: %s", period_time, s, snd_strerror(err));
-        		return err;
-        	}
-                err = INTERNAL(snd_pcm_hw_params_get_period_size)(params, &period_size, NULL);
-                if (err < 0) {
-                	SNDERR("Unable to get period size for %s: %s", s, snd_strerror(err));
-                	return err;
-        	}
-        }
+		/* standard configuration buffer_time -> periods */
+		err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(&params,
+								&buffer_size);
+		if (err < 0) {
+			SNDERR("Unable to get buffer size for %s: %s",
+							s, snd_strerror(err));
+			return err;
+		}
+		err = INTERNAL(snd_pcm_hw_params_get_buffer_time)(&params,
+							&latency, NULL);
+		if (err < 0) {
+			SNDERR("Unable to get buffer time (latency) for %s: %s",
+			       s, snd_strerror(err));
+			return err;
+		}
+		/* set the period time */
+		period_time = latency / 4;
+		err = INTERNAL(snd_pcm_hw_params_set_period_time_near)(pcm,
+						&params, &period_time, NULL);
+		if (err < 0) {
+			SNDERR("Unable to set period time %i for %s: %s",
+			       period_time, s, snd_strerror(err));
+			return err;
+		}
+		err = INTERNAL(snd_pcm_hw_params_get_period_size)(&params,
+							&period_size, NULL);
+		if (err < 0) {
+			SNDERR("Unable to get period size for %s: %s",
+			       s, snd_strerror(err));
+			return err;
+		}
+	}
 	/* write the parameters to device */
-	err = snd_pcm_hw_params(pcm, params);
+	err = snd_pcm_hw_params(pcm, &params);
 	if (err < 0) {
-		SNDERR("Unable to set hw params for %s: %s", s, snd_strerror(err));
+		SNDERR("Unable to set hw params for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
 
 	/* get the current swparams */
-	err = snd_pcm_sw_params_current(pcm, swparams);
+	err = snd_pcm_sw_params_current(pcm, &swparams);
 	if (err < 0) {
-		SNDERR("Unable to determine current swparams for %s: %s", s, snd_strerror(err));
+		SNDERR("Unable to determine current swparams for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
-	/* start the transfer when the buffer is almost full: */
-	/* (buffer_size / avail_min) * avail_min */
-	err = snd_pcm_sw_params_set_start_threshold(pcm, swparams, (buffer_size / period_size) * period_size);
+	/*
+	 * start the transfer when the buffer is almost full:
+	 * (buffer_size / avail_min) * avail_min
+	 */
+	err = snd_pcm_sw_params_set_start_threshold(pcm, &swparams,
+				(buffer_size / period_size) * period_size);
 	if (err < 0) {
-		SNDERR("Unable to set start threshold mode for %s: %s", s, snd_strerror(err));
+		SNDERR("Unable to set start threshold mode for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
-	/* allow the transfer when at least period_size samples can be processed */
-	err = snd_pcm_sw_params_set_avail_min(pcm, swparams, period_size);
+	/*
+	 * allow the transfer when at least period_size samples can be
+	 * processed
+	 */
+	err = snd_pcm_sw_params_set_avail_min(pcm, &swparams, period_size);
 	if (err < 0) {
-		SNDERR("Unable to set avail min for %s: %s", s, snd_strerror(err));
+		SNDERR("Unable to set avail min for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
 	/* write the parameters to the playback device */
-	err = snd_pcm_sw_params(pcm, swparams);
+	err = snd_pcm_sw_params(pcm, &swparams);
 	if (err < 0) {
-		SNDERR("Unable to set sw params for %s: %s", s, snd_strerror(err));
+		SNDERR("Unable to set sw params for %s: %s",
+		       s, snd_strerror(err));
 		return err;
 	}
 	return 0;
@@ -8159,19 +8649,16 @@ int snd_pcm_get_params(snd_pcm_t *pcm,
                        snd_pcm_uframes_t *buffer_size,
                        snd_pcm_uframes_t *period_size)
 {
-	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_t params = {0};
 	int err;
 
 	assert(pcm);
-	snd_pcm_hw_params_alloca(&hw);
-	err = snd_pcm_hw_params_current(pcm, hw);
+	err = snd_pcm_hw_params_current(pcm, &params);
 	if (err < 0)
 	        return err;
-        err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(hw, buffer_size);
-        if (err < 0)
-                return err;
-        err = INTERNAL(snd_pcm_hw_params_get_period_size)(hw, period_size, NULL);
-        if (err < 0)
-                return err;
-	return 0;
+	err = INTERNAL(snd_pcm_hw_params_get_buffer_size)(&params, buffer_size);
+	if (err < 0)
+		return err;
+	return INTERNAL(snd_pcm_hw_params_get_period_size)(&params, period_size,
+							   NULL);
 }

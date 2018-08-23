@@ -16,7 +16,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -240,11 +240,13 @@ static int snd_ctl_hw_elem_tlv(snd_ctl_t *handle, int op_flag,
 		return -errno;
 	}
 	if (op_flag == 0) {
-		if (xtlv->tlv[1] + 2 * sizeof(unsigned int) > tlv_size) {
+		unsigned int size;
+		size = xtlv->tlv[SNDRV_CTL_TLVO_LEN] + 2 * sizeof(unsigned int);
+		if (size > tlv_size) {
 			free(xtlv);
 			return -EFAULT;
 		}
-		memcpy(tlv, xtlv->tlv, xtlv->tlv[1] + 2 * sizeof(unsigned int));
+		memcpy(tlv, xtlv->tlv, size);
 	}
 	free(xtlv);
 	return 0;

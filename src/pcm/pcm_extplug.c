@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -172,6 +172,8 @@ int snd_ext_parm_mask_refine(snd_mask_t *mask, struct snd_ext_parm *parm, int ty
 	unsigned int i;
 
 	parm += type;
+	if (!parm->active)
+		return 0;
 	memset(&bits, 0, sizeof(bits));
 	for (i = 0; i < parm->num_list; i++)
 		bits.bits[parm->list[i] / 32] |= 1U << (parm->list[i] % 32);

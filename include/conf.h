@@ -21,7 +21,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -83,6 +83,8 @@ typedef struct _snd_config_iterator *snd_config_iterator_t;
 typedef struct _snd_config_update snd_config_update_t;
 
 extern snd_config_t *snd_config;
+
+const char *snd_config_topdir(void);
 
 int snd_config_top(snd_config_t **config);
 

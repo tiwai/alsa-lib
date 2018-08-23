@@ -15,7 +15,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -26,7 +26,7 @@
 #include <limits.h>
 #include "pcm_local.h"
 
-static inline void div64_32(u_int64_t *n, u_int32_t d, u_int32_t *rem)
+static inline void div64_32(uint64_t *n, uint32_t d, uint32_t *rem)
 {
 	*rem = *n % d;
 	*n /= d;
@@ -88,7 +88,7 @@ static inline unsigned int sub(unsigned int a, unsigned int b)
 static inline unsigned int muldiv32(unsigned int a, unsigned int b,
 				    unsigned int c, unsigned int *r)
 {
-	u_int64_t n = (u_int64_t) a * b;
+	uint64_t n = (uint64_t) a * b;
 	if (c == 0) {
 		assert(n > 0);
 		*r = 0;
@@ -200,27 +200,33 @@ int snd_interval_refine(snd_interval_t *i, const snd_interval_t *v)
 
 int snd_interval_refine_first(snd_interval_t *i)
 {
+	const unsigned int last_max = i->max;
+
 	if (snd_interval_empty(i))
 		return -ENOENT;
 	if (snd_interval_single(i))
 		return 0;
 	i->max = i->min;
-	i->openmax = i->openmin;
-	if (i->openmax)
+	if (i->openmin)
 		i->max++;
+	/* only exclude max value if also excluded before refine */
+	i->openmax = (i->openmax && i->max >= last_max);
 	return 1;
 }
 
 int snd_interval_refine_last(snd_interval_t *i)
 {
+	const unsigned int last_min = i->min;
+
 	if (snd_interval_empty(i))
 		return -ENOENT;
 	if (snd_interval_single(i))
 		return 0;
 	i->min = i->max;
-	i->openmin = i->openmax;
-	if (i->openmin)
+	if (i->openmax)
 		i->min--;
+	/* only exclude min value if also excluded before refine */
+	i->openmin = (i->openmin && i->min <= last_min);
 	return 1;
 }
 

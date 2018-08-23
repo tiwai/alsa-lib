@@ -11,7 +11,7 @@
  *
  *  You should have received a copy of the GNU Lesser General Public
  *  License along with this library; if not, write to the Free Software  
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  *  Support for the verb/device/modifier core logic and API,
  *  command line tool and file parser was kindly sponsored by
@@ -32,9 +32,32 @@
 
 #include "ucm_local.h"
 #include <dirent.h>
+#include <limits.h>
 
 /** The name of the environment variable containing the UCM directory */
 #define ALSA_CONFIG_UCM_VAR "ALSA_CONFIG_UCM"
+
+/* Directories to store UCM configuration files for components, like
+ * off-soc codecs or embedded DSPs. Components can define their own
+ * devices and sequences, to be reused by sound cards/machines. UCM
+ * manager should not scan these component directories.
+ * Machine use case files can include component configratuation files
+ * via alsaconf syntax:
+ * <searchdir:component-directory-name> and <component-conf-file-name>.
+ * Alsaconf will import the included files automatically. After including
+ * a component file, a machine device's sequence can enable or disable
+ * a component device via syntax:
+ * enadev "component_device_name"
+ * disdev "component_device_name"
+ */
+static const char * const component_dir[] = {
+	"codecs",	/* for off-soc codecs */
+	"dsps",		/* for DSPs embedded in SoC */
+	NULL,		/* terminator */
+};
+
+static int filename_filter(const struct dirent *dirent);
+static int is_component_directory(const char *dir);
 
 static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  struct list_head *base,
@@ -235,6 +258,82 @@ static int parse_device_list(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 	return 0;
 }
 
+/* Find a component device by its name, and remove it from machine device
+ * list.
+ *
+ * Component devices are defined by machine components (usually off-soc
+ * codes or DSP embeded in SoC). Since alsaconf imports their configuration
+ * files automatically, we don't know which devices are component devices
+ * until they are referenced by a machine device sequence. So here when we
+ * find a referenced device, we move it from the machine device list to the
+ * component device list. Component devices will not be exposed to applications
+ * by the original API to list devices for backward compatibility. So sound
+ * servers can only see the machine devices.
+ */
+struct use_case_device *find_component_dev(snd_use_case_mgr_t *uc_mgr,
+	const char *name)
+{
+	struct list_head *pos, *posdev, *_posdev;
+	struct use_case_verb *verb;
+	struct use_case_device *dev;
+
+	list_for_each(pos, &uc_mgr->verb_list) {
+		verb = list_entry(pos, struct use_case_verb, list);
+
+		/* search in the component device list */
+		list_for_each(posdev, &verb->cmpt_device_list) {
+			dev = list_entry(posdev, struct use_case_device, list);
+			if (!strcmp(dev->name, name))
+				return dev;
+		}
+
+		/* search the machine device list */
+		list_for_each_safe(posdev, _posdev, &verb->device_list) {
+			dev = list_entry(posdev, struct use_case_device, list);
+			if (!strcmp(dev->name, name)) {
+				/* find the component device, move it from the
+				 * machine device list to the component device
+				 * list.
+				 */
+				list_del(&dev->list);
+				list_add_tail(&dev->list,
+					      &verb->cmpt_device_list);
+				return dev;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/* parse sequence of a component device
+ *
+ * This function will find the component device and mark if its enable or
+ * disable sequence is needed by its parenet device.
+ */
+static int parse_component_seq(snd_use_case_mgr_t *uc_mgr,
+			  snd_config_t *n, int enable,
+			  struct component_sequence *cmpt_seq)
+{
+	const char *val;
+	int err;
+
+	err = snd_config_get_string(n, &val);
+	if (err < 0)
+		return err;
+
+	cmpt_seq->device = find_component_dev(uc_mgr, val);
+	if (!cmpt_seq->device) {
+		uc_error("error: Cannot find component device %s", val);
+		return -EINVAL;
+	}
+
+	/* Parent needs its enable or disable sequence */
+	cmpt_seq->enable = enable;
+
+	return 0;
+}
+
 /*
  * Parse sequences.
  *
@@ -244,12 +343,16 @@ static int parse_device_list(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
  * cset "element_id_syntax value_syntax"
  * usleep time
  * exec "any unix command with arguments"
+ * enadev "component device name"
+ * disdev "component device name"
  *
  * e.g.
  *	cset "name='Master Playback Switch' 0,0"
  *      cset "iface=PCM,name='Disable HDMI',index=1 0"
+ *	enadev "rt286:Headphones"
+ *	disdev "rt286:Speaker"
  */
-static int parse_sequence(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
+static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  struct list_head *base,
 			  snd_config_t *cfg)
 {
@@ -301,6 +404,30 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 			err = parse_string(n, &curr->data.cset);
 			if (err < 0) {
 				uc_error("error: cset requires a string!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "enadev") == 0) {
+			/* need to enable a component device */
+			curr->type = SEQUENCE_ELEMENT_TYPE_CMPT_SEQ;
+			err = parse_component_seq(uc_mgr, n, 1,
+						&curr->data.cmpt_seq);
+			if (err < 0) {
+				uc_error("error: enadev requires a valid device!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "disdev") == 0) {
+			/* need to disable a component device */
+			curr->type = SEQUENCE_ELEMENT_TYPE_CMPT_SEQ;
+			err = parse_component_seq(uc_mgr, n, 0,
+						&curr->data.cmpt_seq);
+			if (err < 0) {
+				uc_error("error: disdev requires a valid device!");
 				return err;
 			}
 			continue;
@@ -929,6 +1056,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	char filename[MAX_FILE];
 	char *env = getenv(ALSA_CONFIG_UCM_VAR);
 	int err;
+	char *folder_name;
 
 	/* allocate verb */
 	verb = calloc(1, sizeof(struct use_case_verb));
@@ -938,6 +1066,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	INIT_LIST_HEAD(&verb->disable_list);
 	INIT_LIST_HEAD(&verb->transition_list);
 	INIT_LIST_HEAD(&verb->device_list);
+	INIT_LIST_HEAD(&verb->cmpt_device_list);
 	INIT_LIST_HEAD(&verb->modifier_list);
 	INIT_LIST_HEAD(&verb->value_list);
 	list_add_tail(&verb->list, &uc_mgr->verb_list);
@@ -954,9 +1083,17 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	}
 
 	/* open Verb file for reading */
-	snprintf(filename, sizeof(filename), "%s/%s/%s",
-		env ? env : ALSA_USE_CASE_DIR,
-		uc_mgr->card_name, file);
+	if (!strncmp(uc_mgr->conf_file_name, uc_mgr->card_long_name, MAX_CARD_LONG_NAME))
+		folder_name = uc_mgr->card_long_name;
+	else
+		folder_name = uc_mgr->card_name;
+
+	if (env)
+		snprintf(filename, sizeof(filename), "%s/%s/%s",
+			 env, folder_name, file);
+	else
+		snprintf(filename, sizeof(filename), "%s/ucm/%s/%s",
+			 snd_config_topdir(), folder_name, file);
 	filename[sizeof(filename)-1] = '\0';
 	
 	err = uc_mgr_config_load(filename, &cfg);
@@ -1204,15 +1341,85 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 	return 0;
 }
 
+/* find the card in the local machine and store the card long name */
+static int get_card_long_name(snd_use_case_mgr_t *mgr)
+{
+	const char *card_name = mgr->card_name;
+	snd_ctl_t *handle;
+	int card, err;
+	snd_ctl_card_info_t *info;
+	const char *_name, *_long_name;
+
+	snd_ctl_card_info_alloca(&info);
+
+	card = -1;
+	if (snd_card_next(&card) < 0 || card < 0) {
+		uc_error("no soundcards found...");
+		return -1;
+	}
+
+	while (card >= 0) {
+		char name[32];
+
+		sprintf(name, "hw:%d", card);
+		err = snd_ctl_open(&handle, name, 0);
+		if (err < 0) {
+			uc_error("control open (%i): %s", card,
+				 snd_strerror(err));
+			goto next_card;
+		}
+
+		err = snd_ctl_card_info(handle, info);
+		if (err < 0) {
+			uc_error("control hardware info (%i): %s", card,
+				 snd_strerror(err));
+			snd_ctl_close(handle);
+			goto next_card;
+		}
+
+		/* Find the local card by comparing the given name with the
+		 * card short name and long name. The given card name may be
+		 * either a short name or long name, because users may open
+		 * the card by either of the two names.
+		 */
+		_name = snd_ctl_card_info_get_name(info);
+		_long_name = snd_ctl_card_info_get_longname(info);
+		if (!strcmp(card_name, _name)
+		    || !strcmp(card_name, _long_name)) {
+			strcpy(mgr->card_long_name, _long_name);
+			snd_ctl_close(handle);
+			return 0;
+		}
+
+		snd_ctl_close(handle);
+next_card:
+		if (snd_card_next(&card) < 0) {
+			uc_error("snd_card_next");
+			break;
+		}
+	}
+
+	return -1;
+}
 static int load_master_config(const char *card_name, snd_config_t **cfg)
 {
 	char filename[MAX_FILE];
 	char *env = getenv(ALSA_CONFIG_UCM_VAR);
 	int err;
 
-	snprintf(filename, sizeof(filename)-1,
-		"%s/%s/%s.conf", env ? env : ALSA_USE_CASE_DIR,
-		card_name, card_name);
+	if (strnlen(card_name, MAX_CARD_LONG_NAME) == MAX_CARD_LONG_NAME) {
+		uc_error("error: invalid card name %s (at most %d chars)\n",
+			 card_name, MAX_CARD_LONG_NAME - 1);
+		return -EINVAL;
+	}
+
+	if (env)
+		snprintf(filename, sizeof(filename)-1,
+			 "%s/%s/%s.conf", env, card_name, card_name);
+	else
+		snprintf(filename, sizeof(filename)-1,
+			 "%s/ucm/%s/%s.conf", snd_config_topdir(),
+			 card_name, card_name);
 	filename[MAX_FILE-1] = '\0';
 
 	err = uc_mgr_config_load(filename, cfg);
@@ -1225,15 +1432,44 @@ static int load_master_config(const char *card_name, snd_config_t **cfg)
 	return 0;
 }
 
-/* load master use case file for sound card */
+/* load master use case file for sound card
+ *
+ * The same ASoC machine driver can be shared by many different devices.
+ * For user space to differentiate them and get the best device-specific
+ * configuration, ASoC machine drivers may use the DMI info
+ * (vendor-product-version-board) as the card long name. And user space can
+ * define configuration files like longnamei/longname.conf for a specific device.
+ *
+ * This function will try to find the card in the local machine and get its
+ * long name, then load the file longname/longname.conf to get the best
+ * device-specific configuration. If the card is not found in the local
+ * machine or the device-specific file is not available, fall back to load
+ * the default configuration file name/name.conf.
+ */
 int uc_mgr_import_master_config(snd_use_case_mgr_t *uc_mgr)
 {
 	snd_config_t *cfg;
 	int err;
 
-	err = load_master_config(uc_mgr->card_name, &cfg);
-	if (err < 0)
-		return err;
+	err = get_card_long_name(uc_mgr);
+	if (err == 0)	/* load file that maches the card long name */
+		err = load_master_config(uc_mgr->card_long_name, &cfg);
+
+	if (err == 0) {
+		/* got device-specific file that matches the card long name */
+		strcpy(uc_mgr->conf_file_name, uc_mgr->card_long_name);
+	} else {
+		/* Fall back to the file that maches the given card name,
+		 * either short name or long name (users may open a card by
+		 * its name or long name).
+		 */
+		err = load_master_config(uc_mgr->card_name, &cfg);
+		if (err < 0)
+			return err;
+		strncpy(uc_mgr->conf_file_name, uc_mgr->card_name, MAX_CARD_LONG_NAME);
+		uc_mgr->conf_file_name[MAX_CARD_LONG_NAME-1] = '\0';
+	}
+
 	err = parse_master_file(uc_mgr, cfg);
 	snd_config_delete(cfg);
 	if (err < 0)
@@ -1259,7 +1495,28 @@ static int filename_filter(const struct dirent *dirent)
 	return 0;
 }
 
-/* scan all cards and comments */
+/* whether input dir is a predefined component directory */
+static int is_component_directory(const char *dir)
+{
+	int i = 0;
+
+	while (component_dir[i]) {
+		if (!strncmp(dir, component_dir[i], PATH_MAX))
+			return 1;
+		i++;
+	};
+
+	return 0;
+}
+
+/* scan all cards and comments
+ *
+ * Cards are defined by machines. Each card/machine installs its UCM
+ * configuration files in a subdirectory with the same name as the sound
+ * card under /usr/share/alsa/ucm. This function will scan all the card
+ * directories and skip the component directories defined in the array
+ * component_dir.
+ */
 int uc_mgr_scan_master_configs(const char **_list[])
 {
 	char filename[MAX_FILE], dfl[MAX_FILE];
@@ -1270,8 +1527,11 @@ int uc_mgr_scan_master_configs(const char **_list[])
 	ssize_t ss;
 	struct dirent **namelist;
 
-	snprintf(filename, sizeof(filename)-1,
-		"%s", env ? env : ALSA_USE_CASE_DIR);
+	if (env)
+		snprintf(filename, sizeof(filename)-1, "%s", env);
+	else
+		snprintf(filename, sizeof(filename)-1, "%s/ucm",
+			 snd_config_topdir());
 	filename[MAX_FILE-1] = '\0';
 
 #if defined(_GNU_SOURCE) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(__sun)
@@ -1309,6 +1569,11 @@ int uc_mgr_scan_master_configs(const char **_list[])
 	}
 
 	for (i = 0; i < cnt; i++) {
+
+		/* Skip the directories for component devices */
+		if (is_component_directory(namelist[i]->d_name))
+			continue;
+
 		err = load_master_config(namelist[i]->d_name, &cfg);
 		if (err < 0)
 			goto __err;

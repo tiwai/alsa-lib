@@ -17,7 +17,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <inttypes.h>
@@ -346,7 +346,7 @@ static int linear_init(void *obj, snd_pcm_rate_info_t *info)
 			rate->func = linear_shrink;
 		/* pitch is get_increment */
 	}
-	rate->pitch = (((u_int64_t)info->out.rate * LINEAR_DIV) +
+	rate->pitch = (((uint64_t)info->out.rate * LINEAR_DIV) +
 		       (info->in.rate / 2)) / info->in.rate;
 	rate->channels = info->channels;
 
@@ -363,7 +363,7 @@ static int linear_adjust_pitch(void *obj, snd_pcm_rate_info_t *info)
 	struct rate_linear *rate = obj;
 	snd_pcm_uframes_t cframes;
 
-	rate->pitch = (((u_int64_t)info->out.period_size * LINEAR_DIV) +
+	rate->pitch = (((uint64_t)info->out.period_size * LINEAR_DIV) +
 		       (info->in.period_size/2) ) / info->in.period_size;
 			
 	cframes = input_frames(rate, info->out.period_size);

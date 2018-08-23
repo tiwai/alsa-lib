@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -132,14 +132,21 @@ static int snd_pcm_dsnoop_sync_ptr(snd_pcm_t *pcm)
 	snd_pcm_direct_t *dsnoop = pcm->private_data;
 	snd_pcm_uframes_t slave_hw_ptr, old_slave_hw_ptr, avail;
 	snd_pcm_sframes_t diff;
-	
+	int err;
+
 	switch (snd_pcm_state(dsnoop->spcm)) {
 	case SND_PCM_STATE_DISCONNECTED:
 		dsnoop->state = SNDRV_PCM_STATE_DISCONNECTED;
 		return -ENODEV;
+	case SND_PCM_STATE_XRUN:
+		if ((err = snd_pcm_direct_slave_recover(dsnoop)) < 0)
+			return err;
+		break;
 	default:
 		break;
 	}
+	if (snd_pcm_direct_client_chk_xrun(dsnoop, pcm))
+		return -EPIPE;
 	if (dsnoop->slowptr)
 		snd_pcm_hwsync(dsnoop->spcm);
 	old_slave_hw_ptr = dsnoop->slave_hw_ptr;
@@ -201,17 +208,22 @@ static int snd_pcm_dsnoop_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 static snd_pcm_state_t snd_pcm_dsnoop_state(snd_pcm_t *pcm)
 {
 	snd_pcm_direct_t *dsnoop = pcm->private_data;
+	int err;
 	snd_pcm_state_t state;
 	state = snd_pcm_state(dsnoop->spcm);
 	switch (state) {
-	case SND_PCM_STATE_XRUN:
 	case SND_PCM_STATE_SUSPENDED:
 	case SND_PCM_STATE_DISCONNECTED:
 		dsnoop->state = state;
 		return state;
+	case SND_PCM_STATE_XRUN:
+		if ((err = snd_pcm_direct_slave_recover(dsnoop)) < 0)
+			return err;
+		break;
 	default:
 		break;
 	}
+	snd_pcm_direct_client_chk_xrun(dsnoop, pcm);
 	return dsnoop->state;
 }
 
@@ -297,7 +309,8 @@ static int snd_pcm_dsnoop_drop(snd_pcm_t *pcm)
 	return 0;
 }
 
-static int snd_pcm_dsnoop_drain(snd_pcm_t *pcm)
+/* locked version */
+static int __snd_pcm_dsnoop_drain(snd_pcm_t *pcm)
 {
 	snd_pcm_direct_t *dsnoop = pcm->private_data;
 	snd_pcm_uframes_t stop_threshold;
@@ -314,10 +327,20 @@ static int snd_pcm_dsnoop_drain(snd_pcm_t *pcm)
 			break;
 		if (pcm->mode & SND_PCM_NONBLOCK)
 			return -EAGAIN;
-		snd_pcm_wait(pcm, -1);
+		__snd_pcm_wait_in_lock(pcm, -1);
 	}
 	pcm->stop_threshold = stop_threshold;
 	return snd_pcm_dsnoop_drop(pcm);
+}
+
+static int snd_pcm_dsnoop_drain(snd_pcm_t *pcm)
+{
+	int err;
+
+	snd_pcm_lock(pcm);
+	err = __snd_pcm_dsnoop_drain(pcm);
+	snd_pcm_unlock(pcm);
+	return err;
 }
 
 static int snd_pcm_dsnoop_pause(snd_pcm_t *pcm ATTRIBUTE_UNUSED, int enable ATTRIBUTE_UNUSED)
@@ -399,12 +422,16 @@ static snd_pcm_sframes_t snd_pcm_dsnoop_mmap_commit(snd_pcm_t *pcm,
 
 	switch (snd_pcm_state(dsnoop->spcm)) {
 	case SND_PCM_STATE_XRUN:
-		return -EPIPE;
+		if ((err = snd_pcm_direct_slave_recover(dsnoop)) < 0)
+			return err;
+		break;
 	case SND_PCM_STATE_SUSPENDED:
 		return -ESTRPIPE;
 	default:
 		break;
 	}
+	if (snd_pcm_direct_client_chk_xrun(dsnoop, pcm))
+		return -EPIPE;
 	if (dsnoop->state == SND_PCM_STATE_RUNNING) {
 		err = snd_pcm_dsnoop_sync_ptr(pcm);
 		if (err < 0)
@@ -427,6 +454,9 @@ static snd_pcm_sframes_t snd_pcm_dsnoop_avail_update(snd_pcm_t *pcm)
 		if (err < 0)
 			return err;
 	}
+	if (dsnoop->state == SND_PCM_STATE_XRUN)
+		return -EPIPE;
+
 	return snd_pcm_mmap_capture_avail(pcm);
 }
 
@@ -509,7 +539,7 @@ static const snd_pcm_fast_ops_t snd_pcm_dsnoop_fast_ops = {
 	.avail_update = snd_pcm_dsnoop_avail_update,
 	.mmap_commit = snd_pcm_dsnoop_mmap_commit,
 	.htimestamp = snd_pcm_dsnoop_htimestamp,
-	.poll_descriptors = NULL,
+	.poll_descriptors = snd_pcm_direct_poll_descriptors,
 	.poll_descriptors_count = NULL,
 	.poll_revents = snd_pcm_direct_poll_revents,
 };
@@ -595,6 +625,7 @@ int snd_pcm_dsnoop_open(snd_pcm_t **pcmp, const char *name,
 	dsnoop->state = SND_PCM_STATE_OPEN;
 	dsnoop->slowptr = opts->slowptr;
 	dsnoop->max_periods = opts->max_periods;
+	dsnoop->var_periodsize = opts->var_periodsize;
 	dsnoop->sync_ptr = snd_pcm_dsnoop_sync_ptr;
 
  retry:
@@ -708,10 +739,12 @@ int snd_pcm_dsnoop_open(snd_pcm_t **pcmp, const char *name,
 		snd_pcm_direct_client_discard(dsnoop);
 	if (spcm)
 		snd_pcm_close(spcm);
-	if (dsnoop->shmid >= 0)
-		snd_pcm_direct_shm_discard(dsnoop);
-	if (snd_pcm_direct_semaphore_discard(dsnoop) < 0)
+	if ((dsnoop->shmid >= 0) && (snd_pcm_direct_shm_discard(dsnoop))) {
+		if (snd_pcm_direct_semaphore_discard(dsnoop))
+			snd_pcm_direct_semaphore_final(dsnoop, DIRECT_IPC_SEM_CLIENT);
+	} else
 		snd_pcm_direct_semaphore_up(dsnoop, DIRECT_IPC_SEM_CLIENT);
+
  _err_nosem:
 	if (dsnoop) {
 		free(dsnoop->bindings);

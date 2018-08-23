@@ -2,14 +2,15 @@
   Copyright(c) 2014-2015 Intel Corporation
   All rights reserved.
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of version 2 of the GNU General Public License as
-  published by the Free Software Foundation.
+  This library is free software; you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as
+  published by the Free Software Foundation; either version 2.1 of
+  the License, or (at your option) any later version.
 
-  This program is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
 
   Authors: Mengdong Lin <mengdong.lin@intel.com>
            Yao Jin <yao.jin@intel.com>
@@ -25,6 +26,7 @@
 
 static int parse_text_values(snd_config_t *cfg, struct tplg_elem *elem)
 {
+	struct tplg_texts *texts = elem->texts;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	const char *value = NULL;
@@ -44,13 +46,14 @@ static int parse_text_values(snd_config_t *cfg, struct tplg_elem *elem)
 		if (snd_config_get_string(n, &value) < 0)
 			continue;
 
-		elem_copy_text(&elem->texts[j][0], value,
+		elem_copy_text(&texts->items[j][0], value,
 			SNDRV_CTL_ELEM_ID_NAME_MAXLEN);
-		tplg_dbg("\t%s\n", &elem->texts[j][0]);
+		tplg_dbg("\t%s\n", &texts->items[j][0]);
 
 		j++;
 	}
 
+	texts->num_items = j;
 	return 0;
 }
 

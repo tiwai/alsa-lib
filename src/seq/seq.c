@@ -24,7 +24,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -452,13 +452,13 @@ For setting these tempo parameters, use #snd_seq_queue_tempo_t record.
 For example, to set the tempo of the queue <code>q</code> to
 48 PPQ, 60 BPM,
 \code
-void set_tempo(snd_seq_t *handle)
+void set_tempo(snd_seq_t *handle, int queue)
 {
         snd_seq_queue_tempo_t *tempo;
         snd_seq_queue_tempo_alloca(&tempo);
         snd_seq_queue_tempo_set_tempo(tempo, 1000000); // 60 BPM
         snd_seq_queue_tempo_set_ppq(tempo, 48); // 48 PPQ
-        snd_seq_set_queue_tempo(handle, tempo);
+        snd_seq_set_queue_tempo(handle, queue, tempo);
 }
 \endcode
 
@@ -777,7 +777,7 @@ void event_filter(snd_seq_t *seq, snd_seq_event_t *ev)
 
 */
 
-#include <sys/poll.h>
+#include <poll.h>
 #include "seq_local.h"
 
 /****************************************************************************
@@ -823,7 +823,7 @@ static int snd_seq_open_conf(snd_seq_t **seqp, const char *name,
 			     int streams, int mode)
 {
 	const char *str;
-	char buf[256];
+	char buf[256], errbuf[256];
 	int err;
 	snd_config_t *conf, *type_conf = NULL;
 	snd_config_iterator_t i, next;
@@ -899,12 +899,12 @@ static int snd_seq_open_conf(snd_seq_t **seqp, const char *name,
 #ifndef PIC
 	snd_seq_open_symbols();
 #endif
-	h = snd_dlopen(lib, RTLD_NOW);
+	h = INTERNAL(snd_dlopen)(lib, RTLD_NOW, errbuf, sizeof(errbuf));
 	if (h)
 		open_func = snd_dlsym(h, open_name, SND_DLSYM_VERSION(SND_SEQ_DLSYM_VERSION));
 	err = 0;
 	if (!h) {
-		SNDERR("Cannot open shared library %s", lib);
+		SNDERR("Cannot open shared library %s (%s)", lib, errbuf);
 		err = -ENOENT;
 	} else if (!open_func) {
 		SNDERR("symbol %s is not defined inside %s", open_name, lib);
@@ -1530,7 +1530,25 @@ int snd_seq_client_info_get_error_bounce(const snd_seq_client_info_t *info)
  * \param info client_info container
  * \return card number or -1 if value is not available.
  *
- * Only available for SND_SEQ_KERNEL_CLIENT clients.
+ * Only available for #SND_SEQ_KERNEL_CLIENT clients.
+ *
+ * The card number can be used to query state about the hardware
+ * device providing this client, by concatenating <code>"hw:CARD="</code>
+ * with the card number and using it as the <code>name</code> parameter
+ * to #snd_ctl_open().
+ *
+ * \note
+ * The return value of -1 is returned for two different conditions: when the
+ * running kernel does not support this operation, and when the client
+ * does not have a hardware card attached. See
+ * #snd_seq_client_info_get_pid() for a way to determine if the
+ * currently running kernel has support for this operation.
+ *
+ * \sa snd_seq_client_info_get_pid(),
+ *     snd_card_get_name(),
+ *     snd_card_get_longname(),
+ *     snd_ctl_open(),
+ *     snd_ctl_card_info()
  */
 int snd_seq_client_info_get_card(const snd_seq_client_info_t *info)
 {
@@ -1543,7 +1561,29 @@ int snd_seq_client_info_get_card(const snd_seq_client_info_t *info)
  * \param info client_info container
  * \return pid or -1 if value is not available.
  *
- * Only available for SND_SEQ_USER_CLIENT clients.
+ * Only available for #SND_SEQ_USER_CLIENT clients.
+ *
+ * \note
+ * The functionality for getting a client's PID and getting a
+ * client's card was added to the kernel at the same time, so you can
+ * use this function to determine if the running kernel
+ * supports reporting these values. If your own client has a valid
+ * PID as reported by this function, then the running kernel supports
+ * both #snd_seq_client_info_get_card() and #snd_seq_client_info_get_pid().
+ *
+ * \note
+ * Example code for determining kernel support:
+ * \code
+ *   int is_get_card_or_pid_supported(snd_seq_t *seq)
+ *   {
+ *   	snd_seq_client_info_t *my_client_info;
+ *   	snd_seq_client_info_alloca(&my_client_info);
+ *   	snd_seq_get_client_info(seq, my_client_info);
+ *   	return snd_seq_client_info_get_pid(my_client_info) != -1;
+ *   }
+ * \endcode
+ *
+ * \sa snd_seq_client_info_get_card()
  */
 int snd_seq_client_info_get_pid(const snd_seq_client_info_t *info)
 {

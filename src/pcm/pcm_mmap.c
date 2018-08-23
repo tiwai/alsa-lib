@@ -14,7 +14,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <malloc.h>
 #include <string.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/mman.h>
 #ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
@@ -82,12 +82,12 @@ static snd_pcm_sframes_t snd_pcm_mmap_write_areas(snd_pcm_t *pcm,
 		snd_pcm_uframes_t frames = size;
 		snd_pcm_sframes_t result;
 
-		snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
+		__snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
 		snd_pcm_areas_copy(pcm_areas, pcm_offset,
 				   areas, offset, 
 				   pcm->channels, 
 				   frames, pcm->format);
-		result = snd_pcm_mmap_commit(pcm, pcm_offset, frames);
+		result = __snd_pcm_mmap_commit(pcm, pcm_offset, frames);
 		if (result < 0)
 			return xfer > 0 ? (snd_pcm_sframes_t)xfer : result;
 		offset += result;
@@ -114,12 +114,12 @@ static snd_pcm_sframes_t snd_pcm_mmap_read_areas(snd_pcm_t *pcm,
 		snd_pcm_uframes_t frames = size;
 		snd_pcm_sframes_t result;
 		
-		snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
+		__snd_pcm_mmap_begin(pcm, &pcm_areas, &pcm_offset, &frames);
 		snd_pcm_areas_copy(areas, offset,
 				   pcm_areas, pcm_offset,
 				   pcm->channels, 
 				   frames, pcm->format);
-		result = snd_pcm_mmap_commit(pcm, pcm_offset, frames);
+		result = __snd_pcm_mmap_commit(pcm, pcm_offset, frames);
 		if (result < 0)
 			return xfer > 0 ? (snd_pcm_sframes_t)xfer : result;
 		offset += result;
@@ -417,7 +417,7 @@ int snd_pcm_mmap(snd_pcm_t *pcm)
 			case SND_PCM_AREA_SHM:
 				if (i1->u.shm.shmid != i->u.shm.shmid)
 					continue;
-				/* follow thru */
+				/* fall through */
 			case SND_PCM_AREA_LOCAL:
 				if (pcm->access != SND_PCM_ACCESS_MMAP_INTERLEAVED &&
 				    pcm->access != SND_PCM_ACCESS_RW_INTERLEAVED)
@@ -513,6 +513,7 @@ int snd_pcm_munmap(snd_pcm_t *pcm)
 	return 0;
 }
 
+/* called in pcm lock */
 snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				     snd_pcm_uframes_t size)
 {
@@ -530,7 +531,9 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 		{
 			const snd_pcm_channel_area_t *a = snd_pcm_mmap_areas(pcm);
 			const char *buf = snd_pcm_channel_area_addr(a, offset);
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_writei(pcm, buf, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -545,7 +548,9 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				const snd_pcm_channel_area_t *a = &areas[c];
 				bufs[c] = snd_pcm_channel_area_addr(a, offset);
 			}
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_writen(pcm, bufs, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -564,6 +569,7 @@ snd_pcm_sframes_t snd_pcm_write_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 	return err;
 }
 
+/* called in pcm lock */
 snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				    snd_pcm_uframes_t size)
 {
@@ -581,7 +587,9 @@ snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 		{
 			const snd_pcm_channel_area_t *a = snd_pcm_mmap_areas(pcm);
 			char *buf = snd_pcm_channel_area_addr(a, offset);
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_readi(pcm, buf, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;
@@ -596,7 +604,9 @@ snd_pcm_sframes_t snd_pcm_read_mmap(snd_pcm_t *pcm, snd_pcm_uframes_t offset,
 				const snd_pcm_channel_area_t *a = &areas[c];
 				bufs[c] = snd_pcm_channel_area_addr(a, offset);
 			}
+			snd_pcm_unlock(pcm); /* to avoid deadlock */
 			err = _snd_pcm_readn(pcm->fast_op_arg, bufs, frames);
+			snd_pcm_lock(pcm);
 			if (err >= 0)
 				frames = err;
 			break;

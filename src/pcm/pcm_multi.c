@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -1015,7 +1015,6 @@ int snd_pcm_multi_open(snd_pcm_t **pcmp, const char *name,
 	snd_pcm_multi_t *multi;
 	unsigned int i;
 	snd_pcm_stream_t stream;
-	char slave_map[64][64] = { { 0 } };
 	int err;
 
 	assert(pcmp);
@@ -1059,8 +1058,6 @@ int snd_pcm_multi_open(snd_pcm_t **pcmp, const char *name,
 		bind->slave_channel = schannels[i];
 		if (sidxs[i] < 0)
 			continue;
-		assert(!slave_map[sidxs[i]][schannels[i]]);
-		slave_map[sidxs[i]][schannels[i]] = 1;
 	}
 	multi->channels_count = channels_count;
 

@@ -17,7 +17,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -2399,7 +2399,7 @@ struct alisp_object * F_path(struct alisp_instance *instance, struct alisp_objec
 	}
 	if (!strcmp(p1->value.s, "data")) {
 		delete_tree(instance, p1);
-		return new_string(instance, ALSA_CONFIG_DIR);
+		return new_string(instance, snd_config_topdir());
 	}
 	delete_tree(instance, p1);
 	return &alsa_lisp_nil;

@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -50,7 +50,7 @@ typedef struct {
 	snd_pcm_format_t sformat;
 	int schannels;
 	int srate;
-	const snd_config_t *rate_converter;
+	snd_config_t *rate_converter;
 	enum snd_pcm_plug_route_policy route_policy;
 	snd_pcm_route_ttable_entry_t *ttable;
 	int ttable_ok;
@@ -64,6 +64,10 @@ static int snd_pcm_plug_close(snd_pcm_t *pcm)
 	snd_pcm_plug_t *plug = pcm->private_data;
 	int err, result = 0;
 	free(plug->ttable);
+	if (plug->rate_converter) {
+		snd_config_delete(plug->rate_converter);
+		plug->rate_converter = NULL;
+	}
 	assert(plug->gen.slave == plug->req_slave);
 	if (plug->gen.close_slave) {
 		snd_pcm_unlink_hw_ptr(pcm, plug->req_slave);
@@ -133,6 +137,17 @@ static const snd_pcm_format_t linear_preferred_formats[] = {
 	SND_PCM_FORMAT_U24_BE,
 	SND_PCM_FORMAT_S24_LE,
 	SND_PCM_FORMAT_U24_LE,
+#endif
+#ifdef SND_LITTLE_ENDIAN
+	SND_PCM_FORMAT_S20_LE,
+	SND_PCM_FORMAT_U20_LE,
+	SND_PCM_FORMAT_S20_BE,
+	SND_PCM_FORMAT_U20_BE,
+#else
+	SND_PCM_FORMAT_S20_BE,
+	SND_PCM_FORMAT_U20_BE,
+	SND_PCM_FORMAT_S20_LE,
+	SND_PCM_FORMAT_U20_LE,
 #endif
 #ifdef SND_LITTLE_ENDIAN
 	SND_PCM_FORMAT_S24_3LE,
@@ -652,8 +667,10 @@ static int snd_pcm_plug_insert_plugins(snd_pcm_t *pcm,
 	       (plug->ttable && !plug->ttable_ok)) {
 		snd_pcm_t *new;
 		int err;
-		if (k >= sizeof(funcs)/sizeof(*funcs))
+		if (k >= sizeof(funcs)/sizeof(*funcs)) {
+			snd_pcm_plug_clear(pcm);
 			return -EINVAL;
+		}
 		err = funcs[k](pcm, &new, client, &p);
 		if (err < 0) {
 			snd_pcm_plug_clear(pcm);
@@ -1106,7 +1123,6 @@ int snd_pcm_plug_open(snd_pcm_t **pcmp,
 	plug->sformat = sformat;
 	plug->schannels = schannels;
 	plug->srate = srate;
-	plug->rate_converter = rate_converter;
 	plug->gen.slave = plug->req_slave = slave;
 	plug->gen.close_slave = close_slave;
 	plug->route_policy = route_policy;
@@ -1123,6 +1139,15 @@ int snd_pcm_plug_open(snd_pcm_t **pcmp,
 	pcm->ops = &snd_pcm_plug_ops;
 	pcm->fast_ops = slave->fast_ops;
 	pcm->fast_op_arg = slave->fast_op_arg;
+	if (rate_converter) {
+		err = snd_config_copy(&plug->rate_converter,
+				      (snd_config_t *)rate_converter);
+		if (err < 0) {
+			snd_pcm_free(pcm);
+			free(plug);
+			return err;
+		}
+	}
 	pcm->private_data = plug;
 	pcm->poll_fd = slave->poll_fd;
 	pcm->poll_events = slave->poll_events;

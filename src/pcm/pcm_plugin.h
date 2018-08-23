@@ -15,11 +15,10 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
-#include "iatomic.h"
 #include "pcm_generic.h"
 
 typedef snd_pcm_uframes_t (*snd_pcm_slave_xfer_areas_func_t)
@@ -46,12 +45,13 @@ typedef struct {
 	snd_pcm_slave_xfer_areas_undo_func_t undo_write;
 	int (*init)(snd_pcm_t *pcm);
 	snd_pcm_uframes_t appl_ptr, hw_ptr;
-	snd_atomic_write_t watom;
 } snd_pcm_plugin_t;	
 
 /* make local functions really local */
 #define snd_pcm_plugin_init \
 	snd1_pcm_plugin_init
+#define snd_pcm_plugin_may_wait_for_avail_min \
+	snd1_pcm_plugin_may_wait_for_avail_min
 #define snd_pcm_plugin_fast_ops \
 	snd1_pcm_plugin_fast_ops
 #define snd_pcm_plugin_undo_read_generic \
@@ -66,6 +66,7 @@ typedef struct {
 void snd_pcm_plugin_init(snd_pcm_plugin_t *plugin);
 snd_pcm_sframes_t snd_pcm_plugin_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t frames);
 snd_pcm_sframes_t snd_pcm_plugin_forward(snd_pcm_t *pcm, snd_pcm_uframes_t frames);
+int snd_pcm_plugin_may_wait_for_avail_min(snd_pcm_t *pcm, snd_pcm_uframes_t avail);
 
 extern const snd_pcm_fast_ops_t snd_pcm_plugin_fast_ops;
 

@@ -5,11 +5,15 @@ AM_CFLAGS = -g -O2 -W -Wall
 
 AM_CPPFLAGS=-I$(top_srcdir)/include
 
-pkglib_LTLIBRARIES = smixer-sbase.la \
-		     smixer-ac97.la \
-		     smixer-hda.la
+pkglib_LTLIBRARIES =
 
-if BUILD_PYTHON
+if BUILD_MIXER_MODULES
+pkglib_LTLIBRARIES += smixer-sbase.la \
+		      smixer-ac97.la \
+		      smixer-hda.la
+endif
+
+if BUILD_MIXER_PYMODULES
 pkglib_LTLIBRARIES += smixer-python.la
 endif
 
@@ -27,9 +31,7 @@ smixer_hda_la_SOURCES = hda.c sbasedl.c
 smixer_hda_la_LDFLAGS = -module -avoid-version $(LDFLAGS_NOUNDEFINED)
 smixer_hda_la_LIBADD = ../../../src/libasound.la -ldl
 
-if BUILD_PYTHON
 smixer_python_la_SOURCES = python.c
 smixer_python_la_LDFLAGS = -module -avoid-version $(LDFLAGS_NOUNDEFINED)
 smixer_python_la_CFLAGS = $(PYTHON_INCLUDES)
 smixer_python_la_LIBADD = ../../../src/libasound.la $(PYTHON_LIBS)
-endif

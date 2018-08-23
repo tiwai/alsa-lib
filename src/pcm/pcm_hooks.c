@@ -23,7 +23,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -341,7 +341,7 @@ even if the specified control doesn't exist.
 static int snd_pcm_hook_add_conf(snd_pcm_t *pcm, snd_config_t *root, snd_config_t *conf)
 {
 	int err;
-	char buf[256];
+	char buf[256], errbuf[256];
 	const char *str, *id;
 	const char *lib = NULL, *install = NULL;
 	snd_config_t *type = NULL, *args = NULL;
@@ -424,12 +424,12 @@ static int snd_pcm_hook_add_conf(snd_pcm_t *pcm, snd_config_t *root, snd_config_
 		install = buf;
 		snprintf(buf, sizeof(buf), "_snd_pcm_hook_%s_install", str);
 	}
-	h = snd_dlopen(lib, RTLD_NOW);
+	h = INTERNAL(snd_dlopen)(lib, RTLD_NOW, errbuf, sizeof(errbuf));
 	install_func = h ? snd_dlsym(h, install, SND_DLSYM_VERSION(SND_PCM_DLSYM_VERSION)) : NULL;
 	err = 0;
 	if (!h) {
-		SNDERR("Cannot open shared library %s",
-		       lib ? lib : "[builtin]");
+		SNDERR("Cannot open shared library %s (%s)",
+		       lib ? lib : "[builtin]", errbuf);
 		err = -ENOENT;
 	} else if (!install_func) {
 		SNDERR("symbol %s is not defined inside %s", install,
@@ -667,7 +667,7 @@ int _snd_pcm_hook_ctl_elems_install(snd_pcm_t *pcm, snd_config_t *conf)
 {
 	int err;
 	int card;
-	snd_pcm_info_t *info;
+	snd_pcm_info_t info = {0};
 	char ctl_name[16];
 	snd_ctl_t *ctl;
 	snd_sctl_t *sctl = NULL;
@@ -675,11 +675,11 @@ int _snd_pcm_hook_ctl_elems_install(snd_pcm_t *pcm, snd_config_t *conf)
 	snd_pcm_hook_t *h_hw_params = NULL, *h_hw_free = NULL, *h_close = NULL;
 	assert(conf);
 	assert(snd_config_get_type(conf) == SND_CONFIG_TYPE_COMPOUND);
-	snd_pcm_info_alloca(&info);
-	err = snd_pcm_info(pcm, info);
+
+	err = snd_pcm_info(pcm, &info);
 	if (err < 0)
 		return err;
-	card = snd_pcm_info_get_card(info);
+	card = snd_pcm_info_get_card(&info);
 	if (card < 0) {
 		SNDERR("No card for this PCM");
 		return -EINVAL;

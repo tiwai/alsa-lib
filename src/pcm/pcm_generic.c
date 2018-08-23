@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -235,25 +235,25 @@ int snd_pcm_generic_unlink(snd_pcm_t *pcm)
 snd_pcm_sframes_t snd_pcm_generic_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_writei(generic->slave, buffer, size);
+	return _snd_pcm_writei(generic->slave, buffer, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_writen(generic->slave, bufs, size);
+	return _snd_pcm_writen(generic->slave, bufs, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_readi(generic->slave, buffer, size);
+	return _snd_pcm_readi(generic->slave, buffer, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_uframes_t size)
 {
 	snd_pcm_generic_t *generic = pcm->private_data;
-	return snd_pcm_readn(generic->slave, bufs, size);
+	return _snd_pcm_readn(generic->slave, bufs, size);
 }
 
 snd_pcm_sframes_t snd_pcm_generic_mmap_commit(snd_pcm_t *pcm, 
@@ -287,7 +287,7 @@ int snd_pcm_generic_real_htimestamp(snd_pcm_t *pcm, snd_pcm_uframes_t *avail,
 	int ok = 0;
 
 	while (1) {
-		avail1 = snd_pcm_avail_update(pcm);
+		avail1 = __snd_pcm_avail_update(pcm);
 		if (avail1 < 0)
 			return avail1;
 		if (ok && (snd_pcm_uframes_t)avail1 == *avail)

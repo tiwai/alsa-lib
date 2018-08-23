@@ -22,7 +22,6 @@
 #include <sound/asoc.h>
 #include <sound/tlv.h>
 
-#define TPLG_DEBUG
 #ifdef TPLG_DEBUG
 #define tplg_dbg SNDERR
 #else
@@ -31,13 +30,32 @@
 
 #define MAX_FILE		256
 #define TPLG_MAX_PRIV_SIZE	(1024 * 128)
-#define ALSA_TPLG_DIR	ALSA_CONFIG_DIR "/topology"
 
 /** The name of the environment variable containing the tplg directory */
 #define ALSA_CONFIG_TPLG_VAR "ALSA_CONFIG_TPLG"
 
 struct tplg_ref;
 struct tplg_elem;
+
+typedef enum _snd_pcm_rates {
+	SND_PCM_RATE_UNKNOWN = -1,
+	SND_PCM_RATE_5512 = 0,
+	SND_PCM_RATE_8000,
+	SND_PCM_RATE_11025,
+	SND_PCM_RATE_16000,
+	SND_PCM_RATE_22050,
+	SND_PCM_RATE_32000,
+	SND_PCM_RATE_44100,
+	SND_PCM_RATE_48000,
+	SND_PCM_RATE_64000,
+	SND_PCM_RATE_88200,
+	SND_PCM_RATE_96000,
+	SND_PCM_RATE_176400,
+	SND_PCM_RATE_192000,
+	SND_PCM_RATE_CONTINUOUS = 30,
+	SND_PCM_RATE_KNOT = 31,
+	SND_PCM_RATE_LAST = SND_PCM_RATE_KNOT,
+} snd_pcm_rates_t;
 
 struct snd_tplg {
 
@@ -58,12 +76,13 @@ struct snd_tplg {
 
 	/* manifest */
 	struct snd_soc_tplg_manifest manifest;
-	const void *manifest_pdata;	/* copied by builder at file write */
+	void *manifest_pdata;	/* copied by builder at file write */
 
 	/* list of each element type */
 	struct list_head tlv_list;
 	struct list_head widget_list;
 	struct list_head pcm_list;
+	struct list_head dai_list;
 	struct list_head be_list;
 	struct list_head cc_list;
 	struct list_head route_list;
@@ -71,8 +90,10 @@ struct snd_tplg {
 	struct list_head pdata_list;
 	struct list_head token_list;
 	struct list_head tuple_list;
+	struct list_head manifest_list;
 	struct list_head pcm_config_list;
 	struct list_head pcm_caps_list;
+	struct list_head hw_cfg_list;
 
 	/* type-specific control lists */
 	struct list_head mixer_list;
@@ -86,6 +107,11 @@ struct tplg_ref {
 	struct tplg_elem *elem;
 	char id[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 	struct list_head list;
+};
+
+struct tplg_texts {
+	unsigned int num_items;
+	char items[SND_SOC_TPLG_NUM_TEXTS][SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 };
 
 /* element for vendor tokens */
@@ -104,7 +130,7 @@ struct tplg_tuple {
 	char token[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 	union {
 		char string[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
-		char uuid[16];
+		unsigned char uuid[16];
 		unsigned int value;
 	};
 };
@@ -125,9 +151,6 @@ struct tplg_elem {
 
 	char id[SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
 
-	/* storage for texts and data if this is text or data elem*/
-	char texts[SND_SOC_TPLG_NUM_TEXTS][SNDRV_CTL_ELEM_ID_NAME_MAXLEN];
-
 	int index;
 	enum snd_tplg_type type;
 
@@ -143,17 +166,20 @@ struct tplg_elem {
 		struct snd_soc_tplg_bytes_control *bytes_ext;
 		struct snd_soc_tplg_dapm_widget *widget;
 		struct snd_soc_tplg_pcm *pcm;
-		struct snd_soc_tplg_link_config *be;
-		struct snd_soc_tplg_link_config *cc;
+		struct snd_soc_tplg_dai *dai;
+		struct snd_soc_tplg_link_config *link;/* physical link */
 		struct snd_soc_tplg_dapm_graph_elem *route;
 		struct snd_soc_tplg_stream *stream_cfg;
 		struct snd_soc_tplg_stream_caps *stream_caps;
+		struct snd_soc_tplg_hw_config *hw_cfg;
 
 		/* these do not map to UAPI structs but are internal only */
 		struct snd_soc_tplg_ctl_tlv *tlv;
+		struct tplg_texts *texts;
 		struct snd_soc_tplg_private *data;
 		struct tplg_vendor_tokens *tokens;
 		struct tplg_vendor_tuples *tuples;
+		struct snd_soc_tplg_manifest *manifest;
 	};
 
 	/* an element may refer to other elements:
@@ -195,6 +221,9 @@ int tplg_parse_tuples(snd_tplg_t *tplg, snd_config_t *cfg,
 
 void tplg_free_tuples(void *obj);
 
+int tplg_parse_manifest_data(snd_tplg_t *tplg, snd_config_t *cfg,
+	void *private ATTRIBUTE_UNUSED);
+
 int tplg_parse_control_bytes(snd_tplg_t *tplg,
 	snd_config_t *cfg, void *private ATTRIBUTE_UNUSED);
 
@@ -216,19 +245,29 @@ int tplg_parse_stream_caps(snd_tplg_t *tplg,
 int tplg_parse_pcm(snd_tplg_t *tplg,
 	snd_config_t *cfg, void *private ATTRIBUTE_UNUSED);
 
-int tplg_parse_be(snd_tplg_t *tplg,
+int tplg_parse_dai(snd_tplg_t *tplg, snd_config_t *cfg,
+		   void *private ATTRIBUTE_UNUSED);
+
+int tplg_parse_link(snd_tplg_t *tplg,
 	snd_config_t *cfg, void *private ATTRIBUTE_UNUSED);
 
 int tplg_parse_cc(snd_tplg_t *tplg,
 	snd_config_t *cfg, void *private ATTRIBUTE_UNUSED);
 
+int tplg_parse_hw_config(snd_tplg_t *tplg, snd_config_t *cfg,
+			 void *private ATTRIBUTE_UNUSED);
+
 int tplg_build_data(snd_tplg_t *tplg);
+int tplg_build_manifest_data(snd_tplg_t *tplg);
 int tplg_build_controls(snd_tplg_t *tplg);
 int tplg_build_widgets(snd_tplg_t *tplg);
 int tplg_build_routes(snd_tplg_t *tplg);
 int tplg_build_pcm_dai(snd_tplg_t *tplg, unsigned int type);
 
-int tplg_copy_data(struct tplg_elem *elem, struct tplg_elem *ref);
+int tplg_copy_data(snd_tplg_t *tplg, struct tplg_elem *elem,
+		   struct tplg_ref *ref);
+
+int tplg_parse_data_refs(snd_config_t *cfg, struct tplg_elem *elem);
 
 int tplg_ref_add(struct tplg_elem *elem, int type, const char* id);
 int tplg_ref_add_elem(struct tplg_elem *elem, struct tplg_elem *elem_ref);
@@ -238,12 +277,16 @@ void tplg_elem_free(struct tplg_elem *elem);
 void tplg_elem_free_list(struct list_head *base);
 struct tplg_elem *tplg_elem_lookup(struct list_head *base,
 				const char* id,
-				unsigned int type);
+				unsigned int type,
+				int index);
 struct tplg_elem* tplg_elem_new_common(snd_tplg_t *tplg,
 	snd_config_t *cfg, const char *name, enum snd_tplg_type type);
 
 static inline void elem_copy_text(char *dest, const char *src, int len)
 {
+	if (!dest || !src || !len)
+		return;
+
 	strncpy(dest, src, len);
 	dest[len - 1] = 0;
 }
@@ -272,7 +315,9 @@ int tplg_add_enum(snd_tplg_t *tplg, struct snd_tplg_enum_template *enum_ctl,
 int tplg_add_bytes(snd_tplg_t *tplg, struct snd_tplg_bytes_template *bytes_ctl,
 		   struct tplg_elem **e);
 
-int tplg_build_pcm(snd_tplg_t *tplg, unsigned int type);
-int tplg_build_link_cfg(snd_tplg_t *tplg, unsigned int type);
+int tplg_build_pcms(snd_tplg_t *tplg, unsigned int type);
+int tplg_build_dais(snd_tplg_t *tplg, unsigned int type);
+int tplg_build_links(snd_tplg_t *tplg, unsigned int type);
 int tplg_add_link_object(snd_tplg_t *tplg, snd_tplg_obj_template_t *t);
 int tplg_add_pcm_object(snd_tplg_t *tplg, snd_tplg_obj_template_t *t);
+int tplg_add_dai_object(snd_tplg_t *tplg, snd_tplg_obj_template_t *t);

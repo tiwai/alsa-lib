@@ -2,14 +2,15 @@
   Copyright(c) 2014-2015 Intel Corporation
   All rights reserved.
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of version 2 of the GNU General Public License as
-  published by the Free Software Foundation.
+  This library is free software; you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as
+  published by the Free Software Foundation; either version 2.1 of
+  the License, or (at your option) any later version.
 
-  This program is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
 
   Authors: Mengdong Lin <mengdong.lin@intel.com>
            Yao Jin <yao.jin@intel.com>
@@ -19,6 +20,46 @@
 #include "list.h"
 #include "tplg_local.h"
 #include <ctype.h>
+
+/* Get private data buffer of an element */
+struct snd_soc_tplg_private *get_priv_data(struct tplg_elem *elem)
+{
+	struct snd_soc_tplg_private *priv = NULL;
+
+	switch (elem->type) {
+	case SND_TPLG_TYPE_MANIFEST:
+		priv = &elem->manifest->priv;
+		break;
+
+	case SND_TPLG_TYPE_MIXER:
+		priv = &elem->mixer_ctrl->priv;
+		break;
+
+	case SND_TPLG_TYPE_ENUM:
+		priv = &elem->enum_ctrl->priv;
+		break;
+
+	case SND_TPLG_TYPE_BYTES:
+		priv = &elem->bytes_ext->priv;
+		break;
+
+	case SND_TPLG_TYPE_DAPM_WIDGET:
+		priv = &elem->widget->priv;
+		break;
+
+	case SND_TPLG_TYPE_DAI:
+		priv = &elem->dai->priv;
+		break;
+	case SND_TPLG_TYPE_BE:
+		priv = &elem->link->priv;
+		break;
+	default:
+		SNDERR("error: '%s': no support for private data for type %d\n",
+			elem->id, elem->type);
+	}
+
+	return priv;
+}
 
 /* Get Private data from a file. */
 static int tplg_parse_data_file(snd_config_t *cfg, struct tplg_elem *elem)
@@ -37,8 +78,11 @@ static int tplg_parse_data_file(snd_config_t *cfg, struct tplg_elem *elem)
 		return -EINVAL;
 
 	/* prepend alsa config directory to path */
-	snprintf(filename, sizeof(filename), "%s/%s",
-		env ? env : ALSA_TPLG_DIR, value);
+	if (env)
+		snprintf(filename, sizeof(filename), "%s/%s", env, value);
+	else
+		snprintf(filename, sizeof(filename), "%s/topology/%s",
+			 snd_config_topdir(), value);
 
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
@@ -88,7 +132,6 @@ err:
 static void dump_priv_data(struct tplg_elem *elem)
 {
 	struct snd_soc_tplg_private *priv = elem->data;
-	unsigned char *p = (unsigned char *)priv->data;
 	unsigned int i, j = 0;
 
 	tplg_dbg(" elem size = %d, priv data size = %d\n",
@@ -144,6 +187,49 @@ static int get_hex_num(const char *str)
 		return -EINVAL;
 
 	return values;
+}
+
+/* get uuid from a string made by 16 characters separated by commas */
+static int get_uuid(const char *str, unsigned char *uuid_le)
+{
+	unsigned long int  val;
+	char *tmp, *s = NULL;
+	int values = 0, ret = 0;
+
+	tmp = strdup(str);
+	if (tmp == NULL)
+		return -ENOMEM;
+
+	s = strtok(tmp, ",");
+
+	while (s != NULL) {
+		errno = 0;
+		val = strtoul(s, NULL, 0);
+		if ((errno == ERANGE && val == ULONG_MAX)
+			|| (errno != 0 && val == 0)
+			|| (val > UCHAR_MAX)) {
+			SNDERR("error: invalid value for uuid\n");
+			ret = -EINVAL;
+			goto out;
+		}
+
+		 *(uuid_le + values) = (unsigned char)val;
+
+		values++;
+		if (values >= 16)
+			break;
+
+		s = strtok(NULL, ",");
+	}
+
+	if (values < 16) {
+		SNDERR("error: less than 16 integers for uuid\n");
+		ret = -EINVAL;
+	}
+
+out:
+	free(tmp);
+	return ret;
 }
 
 static int write_hex(char *buf, char *str, int width)
@@ -279,12 +365,12 @@ static struct tplg_elem *get_tokens(snd_tplg_t *tplg, struct tplg_elem *elem)
 
 		ref = list_entry(pos, struct tplg_ref, list);
 
-		if (!ref->id || ref->type != SND_TPLG_TYPE_TOKEN)
+		if (ref->type != SND_TPLG_TYPE_TOKEN)
 			continue;
 
 		if (!ref->elem) {
 			ref->elem = tplg_elem_lookup(&tplg->token_list,
-						ref->id, SND_TPLG_TYPE_TOKEN);
+				ref->id, SND_TPLG_TYPE_TOKEN, elem->index);
 		}
 
 		return ref->elem;
@@ -303,7 +389,7 @@ static bool has_tuples(struct tplg_elem *elem)
 	list_for_each(pos, base) {
 
 		ref = list_entry(pos, struct tplg_ref, list);
-		if (ref->id && ref->type == SND_TPLG_TYPE_TUPLE)
+		if (ref->type == SND_TPLG_TYPE_TUPLE)
 			return true;
 	}
 
@@ -326,7 +412,7 @@ static unsigned int get_tuple_size(int type)
 	}
 }
 
-/* fill a data element's private buffer with its tuples */
+/* Add a tuples object to the private buffer of its parent data element */
 static int copy_tuples(struct tplg_elem *elem,
 	struct tplg_vendor_tuples *tuples, struct tplg_vendor_tokens *tokens)
 {
@@ -341,12 +427,9 @@ static int copy_tuples(struct tplg_elem *elem,
 	unsigned int i, j;
 	int token_val;
 
-	if (priv) {
-		SNDERR("error: %s has more data than tuples\n", elem->id);
-		return -EINVAL;
-	}
+	size = priv ? priv->size : 0; /* original private data size */
 
-	size = 0;
+	/* scan each tuples set (one set per type) */
 	for (i = 0; i < tuples->num_sets ; i++) {
 		tuple_set = tuples->set[i];
 		set_size = sizeof(struct snd_soc_tplg_vendor_array)
@@ -366,7 +449,7 @@ static int copy_tuples(struct tplg_elem *elem,
 			return -ENOMEM;
 
 		off = priv->size;
-		priv->size = size;
+		priv->size = size; /* update private data size */
 
 		array = (struct snd_soc_tplg_vendor_array *)(priv->data + off);
 		array->size = set_size;
@@ -413,38 +496,43 @@ static int build_tuples(snd_tplg_t *tplg, struct tplg_elem *elem)
 	struct tplg_ref *ref;
 	struct list_head *base, *pos;
 	struct tplg_elem *tuples, *tokens;
+	int err;
 
 	base = &elem->ref_list;
 	list_for_each(pos, base) {
 
 		ref = list_entry(pos, struct tplg_ref, list);
 
-		if (!ref->id || ref->type != SND_TPLG_TYPE_TUPLE)
+		if (ref->type != SND_TPLG_TYPE_TUPLE)
 			continue;
 
-		tplg_dbg("look up tuples %s\n", ref->id);
+		tplg_dbg("tuples '%s' used by data '%s'\n", ref->id, elem->id);
 
 		if (!ref->elem)
 			ref->elem = tplg_elem_lookup(&tplg->tuple_list,
-						ref->id, SND_TPLG_TYPE_TUPLE);
+				ref->id, SND_TPLG_TYPE_TUPLE, elem->index);
 		tuples = ref->elem;
-		if (!tuples)
+		if (!tuples) {
+			SNDERR("error: cannot find tuples %s\n", ref->id);
 			return -EINVAL;
+		}
 
-		tplg_dbg("found tuples %s\n", tuples->id);
 		tokens = get_tokens(tplg, tuples);
-		if (!tokens)
+		if (!tokens) {
+			SNDERR("error: cannot find token for %s\n", ref->id);
 			return -EINVAL;
+		}
 
-		tplg_dbg("found tokens %s\n", tokens->id);
-		/* a data object can only have one tuples object */
-		return copy_tuples(elem, tuples->tuples, tokens->tokens);
+		/* a data object can have multiple tuples objects */
+		err = copy_tuples(elem, tuples->tuples, tokens->tokens);
+		if (err < 0)
+			return err;
 	}
 
 	return 0;
 }
 
-static int parse_tuple_set(snd_tplg_t *tplg, snd_config_t *cfg,
+static int parse_tuple_set(snd_config_t *cfg,
 	struct tplg_tuple_set **s)
 {
 	snd_config_iterator_t i, next;
@@ -454,21 +542,20 @@ static int parse_tuple_set(snd_tplg_t *tplg, snd_config_t *cfg,
 	unsigned int type, num_tuples = 0;
 	struct tplg_tuple *tuple;
 	unsigned long int tuple_val;
-	int len;
 
 	snd_config_get_id(cfg, &id);
 
-	if (strcmp(id, "uuid") == 0)
+	if (strncmp(id, "uuid", 4) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_UUID;
-	else if (strcmp(id, "string") == 0)
+	else if (strncmp(id, "string", 5) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_STRING;
-	else if (strcmp(id, "bool") == 0)
+	else if (strncmp(id, "bool", 4) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_BOOL;
-	else if (strcmp(id, "byte") == 0)
+	else if (strncmp(id, "byte", 4) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_BYTE;
-	else if (strcmp(id, "short") == 0)
+	else if (strncmp(id, "short", 5) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_SHORT;
-	else if (strcmp(id, "word") == 0)
+	else if (strncmp(id, "word", 4) == 0)
 		type = SND_SOC_TPLG_TUPLE_TYPE_WORD;
 	else {
 		SNDERR("error: invalid tuple type '%s'\n", id);
@@ -505,14 +592,8 @@ static int parse_tuple_set(snd_tplg_t *tplg, snd_config_t *cfg,
 
 		switch (type) {
 		case SND_SOC_TPLG_TUPLE_TYPE_UUID:
-			len = strlen(value);
-			if (len > 16 || len == 0) {
-				SNDERR("error: tuple %s: invalid uuid\n", id);
+			if (get_uuid(value, tuple->uuid) < 0)
 				goto err;
-			}
-
-			memcpy(tuple->uuid, value, len);
-			tplg_dbg("\t\t%s = %s\n", tuple->token, tuple->uuid);
 			break;
 
 		case SND_SOC_TPLG_TUPLE_TYPE_STRING:
@@ -568,7 +649,7 @@ err:
 	return -EINVAL;
 }
 
-static int parse_tuple_sets(snd_tplg_t *tplg, snd_config_t *cfg,
+static int parse_tuple_sets(snd_config_t *cfg,
 	struct tplg_vendor_tuples *tuples)
 {
 	snd_config_iterator_t i, next;
@@ -578,8 +659,8 @@ static int parse_tuple_sets(snd_tplg_t *tplg, snd_config_t *cfg,
 	int err;
 
 	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
-		snd_config_get_id(cfg, &id);
-		SNDERR("error: compound type expected for %s", id);
+		if (snd_config_get_id(cfg, &id) >= 0)
+			SNDERR("error: compound type expected for %s", id);
 		return -EINVAL;
 	}
 
@@ -602,13 +683,96 @@ static int parse_tuple_sets(snd_tplg_t *tplg, snd_config_t *cfg,
 			return -EINVAL;
 		}
 
-		err = parse_tuple_set(tplg, n, &tuples->set[tuples->num_sets]);
+		err = parse_tuple_set(n, &tuples->set[tuples->num_sets]);
 		if (err < 0)
 			return err;
 
 		/* overlook empty tuple sets */
 		if (tuples->set[tuples->num_sets])
 			tuples->num_sets++;
+	}
+
+	return 0;
+}
+
+/* Parse tuples references for a data element, either a single tuples section
+ * or a list of tuples sections.
+ */
+static int parse_tuples_refs(snd_config_t *cfg,
+	struct tplg_elem *elem)
+{
+	snd_config_type_t  type;
+	snd_config_iterator_t i, next;
+	snd_config_t *n;
+	const char *val = NULL;
+
+	type = snd_config_get_type(cfg);
+
+	/* refer to a single tuples section */
+	if (type == SND_CONFIG_TYPE_STRING) {
+		if (snd_config_get_string(cfg, &val) < 0)
+			return -EINVAL;
+		tplg_dbg("\ttuples: %s\n", val);
+		return tplg_ref_add(elem, SND_TPLG_TYPE_TUPLE, val);
+	}
+
+	if (type != SND_CONFIG_TYPE_COMPOUND) {
+		SNDERR("error: compound type expected for %s", elem->id);
+		return -EINVAL;
+	}
+
+	/* refer to a list of data sections */
+	snd_config_for_each(i, next, cfg) {
+		const char *val;
+
+		n = snd_config_iterator_entry(i);
+		if (snd_config_get_string(n, &val) < 0)
+			continue;
+
+		tplg_dbg("\ttuples: %s\n", val);
+		tplg_ref_add(elem, SND_TPLG_TYPE_TUPLE, val);
+	}
+
+	return 0;
+}
+
+/* Parse private data references for the element, either a single data section
+ * or a list of data sections.
+ */
+int tplg_parse_data_refs(snd_config_t *cfg,
+	struct tplg_elem *elem)
+{
+	snd_config_type_t  type;
+	snd_config_iterator_t i, next;
+	snd_config_t *n;
+	const char *val = NULL;
+
+	type = snd_config_get_type(cfg);
+
+	/* refer to a single data section */
+	if (type == SND_CONFIG_TYPE_STRING) {
+		if (snd_config_get_string(cfg, &val) < 0)
+			return -EINVAL;
+
+		tplg_dbg("\tdata: %s\n", val);
+		return tplg_ref_add(elem, SND_TPLG_TYPE_DATA, val);
+	}
+
+	if (type != SND_CONFIG_TYPE_COMPOUND) {
+		SNDERR("error: compound type expected for %s", elem->id);
+		return -EINVAL;
+	}
+
+	/* refer to a list of data sections */
+	snd_config_for_each(i, next, cfg) {
+		const char *val;
+
+		n = snd_config_iterator_entry(i);
+		if (snd_config_get_string(n, &val) < 0)
+			continue;
+
+		tplg_dbg("\tdata: %s\n", val);
+		tplg_ref_add(elem, SND_TPLG_TYPE_DATA, val);
 	}
 
 	return 0;
@@ -702,7 +866,7 @@ int tplg_parse_tuples(snd_tplg_t *tplg, snd_config_t *cfg,
 		}
 
 		if (strcmp(id, "tuples") == 0) {
-			err = parse_tuple_sets(tplg, n, tuples);
+			err = parse_tuple_sets(n, tuples);
 			if (err < 0)
 				return err;
 		}
@@ -724,6 +888,103 @@ void tplg_free_tuples(void *obj)
 		free(tuples->set[i]);
 
 	free(tuples->set);
+}
+
+/* Parse manifest's data references
+ */
+int tplg_parse_manifest_data(snd_tplg_t *tplg, snd_config_t *cfg,
+	void *private ATTRIBUTE_UNUSED)
+{
+	struct snd_soc_tplg_manifest *manifest;
+	struct tplg_elem *elem;
+	snd_config_iterator_t i, next;
+	snd_config_t *n;
+	const char *id;
+	int err;
+
+	if (!list_empty(&tplg->manifest_list)) {
+		SNDERR("error: already has manifest data\n");
+		return -EINVAL;
+	}
+
+	elem = tplg_elem_new_common(tplg, cfg, NULL, SND_TPLG_TYPE_MANIFEST);
+	if (!elem)
+		return -ENOMEM;
+
+	manifest = elem->manifest;
+	manifest->size = elem->size;
+
+	tplg_dbg(" Manifest: %s\n", elem->id);
+
+	snd_config_for_each(i, next, cfg) {
+		n = snd_config_iterator_entry(i);
+		if (snd_config_get_id(n, &id) < 0)
+			continue;
+
+		/* skip comments */
+		if (strcmp(id, "comment") == 0)
+			continue;
+		if (id[0] == '#')
+			continue;
+
+
+		if (strcmp(id, "data") == 0) {
+			err = tplg_parse_data_refs(n, elem);
+			if (err < 0)
+				return err;
+			continue;
+		}
+	}
+
+	return 0;
+}
+
+/* merge private data of manifest */
+int tplg_build_manifest_data(snd_tplg_t *tplg)
+{
+	struct list_head *base, *pos;
+	struct tplg_elem *elem = NULL;
+	struct tplg_ref *ref;
+	struct snd_soc_tplg_manifest *manifest;
+	int err = 0;
+
+	base = &tplg->manifest_list;
+	list_for_each(pos, base) {
+
+		elem = list_entry(pos, struct tplg_elem, list);
+		break;
+	}
+
+	if (!elem) /* no manifest data */
+		return 0;
+
+	base = &elem->ref_list;
+
+	/* for each ref in this manifest elem */
+	list_for_each(pos, base) {
+
+		ref = list_entry(pos, struct tplg_ref, list);
+		if (ref->elem)
+			continue;
+
+		if (ref->type == SND_TPLG_TYPE_DATA) {
+			err = tplg_copy_data(tplg, elem, ref);
+			if (err < 0)
+				return err;
+		}
+	}
+
+	manifest = elem->manifest;
+	if (!manifest->priv.size) /* no manifest data */
+		return 0;
+
+	tplg->manifest_pdata = malloc(manifest->priv.size);
+	if (!tplg->manifest_pdata)
+		return -ENOMEM;
+
+	tplg->manifest.priv.size = manifest->priv.size;
+	memcpy(tplg->manifest_pdata, manifest->priv.data, manifest->priv.size);
+	return 0;
 }
 
 /* Parse Private data.
@@ -788,19 +1049,9 @@ int tplg_parse_data(snd_tplg_t *tplg, snd_config_t *cfg,
 		}
 
 		if (strcmp(id, "tuples") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-			tplg_dbg(" Data: %s\n", val);
-			tplg_ref_add(elem, SND_TPLG_TYPE_TUPLE, val);
-			continue;
-		}
-
-		if (strcmp(id, "index") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			elem->index = atoi(val);
-			tplg_dbg("\t%s: %d\n", id, elem->index);
+			err = parse_tuples_refs(n, elem);
+			if (err < 0)
+				return err;
 			continue;
 		}
 
@@ -817,54 +1068,58 @@ int tplg_parse_data(snd_tplg_t *tplg, snd_config_t *cfg,
 	return err;
 }
 
-/* copy private data into the bytes extended control */
-int tplg_copy_data(struct tplg_elem *elem, struct tplg_elem *ref)
+/* Find a referenced data element and copy its data to the parent
+ * element's private data buffer.
+ * An element can refer to multiple data sections. Data of these sections
+ * will be merged in the their reference order.
+ */
+int tplg_copy_data(snd_tplg_t *tplg, struct tplg_elem *elem,
+		   struct tplg_ref *ref)
 {
-	struct snd_soc_tplg_private *priv;
-	int priv_data_size;
+	struct tplg_elem *ref_elem;
+	struct snd_soc_tplg_private *priv, *old_priv;
+	int priv_data_size, old_priv_data_size;
 	void *obj;
 
-	if (!ref)
+	ref_elem = tplg_elem_lookup(&tplg->pdata_list,
+				     ref->id, SND_TPLG_TYPE_DATA, elem->index);
+	if (!ref_elem) {
+		SNDERR("error: cannot find data '%s' referenced by"
+		" element '%s'\n", ref->id, elem->id);
 		return -EINVAL;
+	}
 
 	tplg_dbg("Data '%s' used by '%s'\n", ref->id, elem->id);
-	if (!ref->data || !ref->data->size) /* overlook empty private data */
+	/* overlook empty private data */
+	if (!ref_elem->data || !ref_elem->data->size) {
+		ref->elem = ref_elem;
 		return 0;
+	}
 
-	priv_data_size = ref->data->size;
+	old_priv = get_priv_data(elem);
+	if (!old_priv)
+		return -EINVAL;
+	old_priv_data_size = old_priv->size;
+
+	priv_data_size = ref_elem->data->size;
 	obj = realloc(elem->obj,
 			elem->size + priv_data_size);
 	if (!obj)
 		return -ENOMEM;
 	elem->obj = obj;
 
-	switch (elem->type) {
-	case SND_TPLG_TYPE_MIXER:
-		priv = &elem->mixer_ctrl->priv;
-		break;
-
-	case SND_TPLG_TYPE_ENUM:
-		priv = &elem->enum_ctrl->priv;
-		break;
-
-	case SND_TPLG_TYPE_BYTES:
-		priv = &elem->bytes_ext->priv;
-		break;
-
-	case SND_TPLG_TYPE_DAPM_WIDGET:
-		priv = &elem->widget->priv;
-		break;
-
-	default:
-		SNDERR("error: elem '%s': type %d private data not supported \n",
-			elem->id, elem->type);
+	priv = get_priv_data(elem);
+	if (!priv)
 		return -EINVAL;
-	}
 
+	/* merge the new data block */
 	elem->size += priv_data_size;
-	priv->size = priv_data_size;
-	ref->compound_elem = 1;
-	memcpy(priv->data, ref->data->data, priv_data_size);
+	priv->size = priv_data_size + old_priv_data_size;
+	ref_elem->compound_elem = 1;
+	memcpy(priv->data + old_priv_data_size,
+	       ref_elem->data->data, priv_data_size);
+
+	ref->elem = ref_elem;
 	return 0;
 }
 

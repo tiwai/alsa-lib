@@ -23,7 +23,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <string.h>
 #include <fcntl.h>
@@ -90,10 +91,13 @@ typedef struct {
 	int version;
 	int fd;
 	int card, device, subdevice;
-	int sync_ptr_ioctl;
+
 	volatile struct snd_pcm_mmap_status * mmap_status;
 	struct snd_pcm_mmap_control *mmap_control;
+	bool mmap_status_fallbacked;
+	bool mmap_control_fallbacked;
 	struct snd_pcm_sync_ptr *sync_ptr;
+
 	int period_event;
 	snd_timer_t *period_timer;
 	struct pollfd period_timer_pfd;
@@ -132,8 +136,7 @@ static int sync_ptr1(snd_pcm_hw_t *hw, unsigned int flags)
 {
 	int err;
 	hw->sync_ptr->flags = flags;
-	err = ioctl((hw)->fd, SNDRV_PCM_IOCTL_SYNC_PTR, (hw)->sync_ptr);
-	if (err < 0) {
+	if (ioctl(hw->fd, SNDRV_PCM_IOCTL_SYNC_PTR, hw->sync_ptr) < 0) {
 		err = -errno;
 		SYSMSG("SNDRV_PCM_IOCTL_SYNC_PTR failed (%i)", err);
 		return err;
@@ -141,9 +144,65 @@ static int sync_ptr1(snd_pcm_hw_t *hw, unsigned int flags)
 	return 0;
 }
 
-static inline int sync_ptr(snd_pcm_hw_t *hw, unsigned int flags)
+static int issue_avail_min(snd_pcm_hw_t *hw)
 {
-	return hw->sync_ptr ? sync_ptr1(hw, flags) : 0;
+	if (!hw->mmap_control_fallbacked)
+		return 0;
+
+	/* Avoid unexpected change of applptr in kernel space. */
+	return sync_ptr1(hw, SNDRV_PCM_SYNC_PTR_APPL);
+}
+
+static int issue_applptr(snd_pcm_hw_t *hw)
+{
+	if (!hw->mmap_control_fallbacked)
+		return 0;
+
+	/* Avoid unexpected change of avail_min in kernel space. */
+	return sync_ptr1(hw, SNDRV_PCM_SYNC_PTR_AVAIL_MIN);
+}
+
+static int request_hwsync(snd_pcm_hw_t *hw)
+{
+	if (!hw->mmap_status_fallbacked)
+		return 0;
+
+	/*
+	 * Query both of control/status data to avoid unexpected change of
+	 * control data in kernel space.
+	 */
+	return sync_ptr1(hw,
+			 SNDRV_PCM_SYNC_PTR_HWSYNC |
+			 SNDRV_PCM_SYNC_PTR_APPL |
+			 SNDRV_PCM_SYNC_PTR_AVAIL_MIN);
+}
+
+static int query_status_and_control_data(snd_pcm_hw_t *hw)
+{
+	if (!hw->mmap_control_fallbacked)
+		return 0;
+
+	/*
+	 * Query both of control/status data to avoid unexpected change of
+	 * control data in kernel space.
+	 */
+	return sync_ptr1(hw,
+			 SNDRV_PCM_SYNC_PTR_APPL |
+			 SNDRV_PCM_SYNC_PTR_AVAIL_MIN);
+}
+
+static int query_status_data(snd_pcm_hw_t *hw)
+{
+	if (!hw->mmap_status_fallbacked)
+		return 0;
+
+	/*
+	 * Query both of control/status data to avoid unexpected change of
+	 * control data in kernel space.
+	 */
+	return sync_ptr1(hw,
+			 SNDRV_PCM_SYNC_PTR_APPL |
+			 SNDRV_PCM_SYNC_PTR_AVAIL_MIN);
 }
 
 static int snd_pcm_hw_clear_timer_queue(snd_pcm_hw_t *hw)
@@ -330,14 +389,7 @@ static int snd_pcm_hw_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t * params)
 	params->info &= ~0xf0000000;
 	if (pcm->tstamp_type != SND_PCM_TSTAMP_TYPE_GETTIMEOFDAY)
 		params->info |= SND_PCM_INFO_MONOTONIC;
-	err = sync_ptr(hw, 0);
-	if (err < 0)
-		return err;
-	if (pcm->stream == SND_PCM_STREAM_CAPTURE) {
-		snd_pcm_set_appl_ptr(pcm, &hw->mmap_control->appl_ptr, hw->fd,
-				     SNDRV_PCM_MMAP_OFFSET_CONTROL);
-	}
-	return 0;
+	return query_status_data(hw);
 }
 
 static void snd_pcm_hw_close_timer(snd_pcm_hw_t *hw)
@@ -351,15 +403,24 @@ static void snd_pcm_hw_close_timer(snd_pcm_hw_t *hw)
 static int snd_pcm_hw_change_timer(snd_pcm_t *pcm, int enable)
 {
 	snd_pcm_hw_t *hw = pcm->private_data;
-	snd_timer_params_t *params;
+	snd_timer_params_t params = {0};
 	unsigned int suspend, resume;
 	int err;
 	
 	if (enable) {
-		snd_timer_params_alloca(&params);
-		err = snd_timer_hw_open(&hw->period_timer, "hw-pcm-period-event", SND_TIMER_CLASS_PCM, SND_TIMER_SCLASS_NONE, hw->card, hw->device, (hw->subdevice << 1) | (pcm->stream & 1), SND_TIMER_OPEN_NONBLOCK | SND_TIMER_OPEN_TREAD);
+		err = snd_timer_hw_open(&hw->period_timer,
+				"hw-pcm-period-event",
+				SND_TIMER_CLASS_PCM, SND_TIMER_SCLASS_NONE,
+				hw->card, hw->device,
+				(hw->subdevice << 1) | (pcm->stream & 1),
+				SND_TIMER_OPEN_NONBLOCK | SND_TIMER_OPEN_TREAD);
 		if (err < 0) {
-			err = snd_timer_hw_open(&hw->period_timer, "hw-pcm-period-event", SND_TIMER_CLASS_PCM, SND_TIMER_SCLASS_NONE, hw->card, hw->device, (hw->subdevice << 1) | (pcm->stream & 1), SND_TIMER_OPEN_NONBLOCK);
+			err = snd_timer_hw_open(&hw->period_timer,
+				"hw-pcm-period-event",
+				SND_TIMER_CLASS_PCM, SND_TIMER_SCLASS_NONE,
+				hw->card, hw->device,
+				(hw->subdevice << 1) | (pcm->stream & 1),
+				SND_TIMER_OPEN_NONBLOCK);
 			return err;
 		}
 		if (snd_timer_poll_descriptors_count(hw->period_timer) != 1) {
@@ -368,7 +429,8 @@ static int snd_pcm_hw_change_timer(snd_pcm_t *pcm, int enable)
 		}
 		hw->period_timer_pfd.events = POLLIN;
  		hw->period_timer_pfd.revents = 0;
-		snd_timer_poll_descriptors(hw->period_timer, &hw->period_timer_pfd, 1);
+		snd_timer_poll_descriptors(hw->period_timer,
+					   &hw->period_timer_pfd, 1);
 		hw->period_timer_need_poll = 0;
 		suspend = 1<<SND_TIMER_EVENT_MSUSPEND;
 		resume = 1<<SND_TIMER_EVENT_MRESUME;
@@ -377,10 +439,12 @@ static int snd_pcm_hw_change_timer(snd_pcm_t *pcm, int enable)
 		 */
 		{
 			int ver = 0;
-			ioctl(hw->period_timer_pfd.fd, SNDRV_TIMER_IOCTL_PVERSION, &ver);
-			/* In older versions, check via poll before read() is needed
-                         * because of the confliction between TIMER_START and
-                         * FIONBIO ioctls.
+			ioctl(hw->period_timer_pfd.fd,
+			      SNDRV_TIMER_IOCTL_PVERSION, &ver);
+			/*
+			 * In older versions, check via poll before read() is
+			 * needed because of the confliction between
+			 * TIMER_START and FIONBIO ioctls.
                          */
 			if (ver < SNDRV_PROTOCOL_VERSION(2, 0, 4))
 				hw->period_timer_need_poll = 1;
@@ -393,11 +457,11 @@ static int snd_pcm_hw_change_timer(snd_pcm_t *pcm, int enable)
 				resume = 1<<SND_TIMER_EVENT_MCONTINUE;
 			}
 		}
-		snd_timer_params_set_auto_start(params, 1);
-		snd_timer_params_set_ticks(params, 1);
-		snd_timer_params_set_filter(params, (1<<SND_TIMER_EVENT_TICK) |
+		snd_timer_params_set_auto_start(&params, 1);
+		snd_timer_params_set_ticks(&params, 1);
+		INTERNAL(snd_timer_params_set_filter)(&params, (1<<SND_TIMER_EVENT_TICK) |
 					    suspend | resume);
-		err = snd_timer_params(hw->period_timer, params);
+		err = snd_timer_params(hw->period_timer, &params);
 		if (err < 0) {
 			snd_pcm_hw_close_timer(hw);
 			return err;
@@ -444,7 +508,7 @@ static int snd_pcm_hw_sw_params(snd_pcm_t *pcm, snd_pcm_sw_params_t * params)
 	    params->silence_size == pcm->silence_size &&
 	    old_period_event == hw->period_event) {
 		hw->mmap_control->avail_min = params->avail_min;
-		return sync_ptr(hw, 0);
+		return issue_avail_min(hw);
 	}
 	if (params->tstamp_type == SND_PCM_TSTAMP_TYPE_MONOTONIC_RAW &&
 	    hw->version < SNDRV_PROTOCOL_VERSION(2, 0, 12)) {
@@ -532,7 +596,7 @@ static int snd_pcm_hw_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 static snd_pcm_state_t snd_pcm_hw_state(snd_pcm_t *pcm)
 {
 	snd_pcm_hw_t *hw = pcm->private_data;
-	int err = sync_ptr(hw, 0);
+	int err = query_status_data(hw);
 	if (err < 0)
 		return err;
 	return (snd_pcm_state_t) hw->mmap_status->state;
@@ -555,8 +619,8 @@ static int snd_pcm_hw_hwsync(snd_pcm_t *pcm)
 	snd_pcm_hw_t *hw = pcm->private_data;
 	int fd = hw->fd, err;
 	if (SNDRV_PROTOCOL_VERSION(2, 0, 3) <= hw->version) {
-		if (hw->sync_ptr) {
-			err = sync_ptr1(hw, SNDRV_PCM_SYNC_PTR_HWSYNC);
+		if (hw->mmap_status_fallbacked) {
+			err = request_hwsync(hw);
 			if (err < 0)
 				return err;
 		} else {
@@ -591,7 +655,7 @@ static int snd_pcm_hw_prepare(snd_pcm_t *pcm)
 		SYSMSG("SNDRV_PCM_IOCTL_PREPARE failed (%i)", err);
 		return err;
 	}
-	return sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL);
+	return query_status_and_control_data(hw);
 }
 
 static int snd_pcm_hw_reset(snd_pcm_t *pcm)
@@ -603,7 +667,7 @@ static int snd_pcm_hw_reset(snd_pcm_t *pcm)
 		SYSMSG("SNDRV_PCM_IOCTL_RESET failed (%i)", err);
 		return err;
 	}
-	return sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL);
+	return query_status_and_control_data(hw);
 }
 
 static int snd_pcm_hw_start(snd_pcm_t *pcm)
@@ -614,7 +678,7 @@ static int snd_pcm_hw_start(snd_pcm_t *pcm)
 	assert(pcm->stream != SND_PCM_STREAM_PLAYBACK ||
 	       snd_pcm_mmap_playback_hw_avail(pcm) > 0);
 #endif
-	sync_ptr(hw, 0);
+	issue_applptr(hw);
 	if (ioctl(hw->fd, SNDRV_PCM_IOCTL_START) < 0) {
 		err = -errno;
 		SYSMSG("SNDRV_PCM_IOCTL_START failed (%i)", err);
@@ -678,7 +742,7 @@ static snd_pcm_sframes_t snd_pcm_hw_rewind(snd_pcm_t *pcm, snd_pcm_uframes_t fra
 		SYSMSG("SNDRV_PCM_IOCTL_REWIND failed (%i)", err);
 		return err;
 	}
-	err = sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL);
+	err = query_status_and_control_data(hw);
 	if (err < 0)
 		return err;
 	return frames;
@@ -699,16 +763,13 @@ static snd_pcm_sframes_t snd_pcm_hw_forward(snd_pcm_t *pcm, snd_pcm_uframes_t fr
 			SYSMSG("SNDRV_PCM_IOCTL_FORWARD failed (%i)", err);
 			return err;
 		}
-		err = sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL);
+		err = query_status_and_control_data(hw);
 		if (err < 0)
 			return err;
 		return frames;
 	} else {
 		snd_pcm_sframes_t avail;
 
-		err = sync_ptr(hw, SNDRV_PCM_SYNC_PTR_HWSYNC);
-		if (err < 0)
-			return err;
 		switch (FAST_PCM_STATE(hw)) {
 		case SNDRV_PCM_STATE_RUNNING:
 		case SNDRV_PCM_STATE_DRAINING:
@@ -726,9 +787,6 @@ static snd_pcm_sframes_t snd_pcm_hw_forward(snd_pcm_t *pcm, snd_pcm_uframes_t fr
 		if (frames > (snd_pcm_uframes_t)avail)
 			frames = avail;
 		snd_pcm_mmap_appl_forward(pcm, frames);
-		err = sync_ptr(hw, 0);
-		if (err < 0)
-			return err;
 		return frames;
 	}
 }
@@ -795,8 +853,10 @@ static snd_pcm_sframes_t snd_pcm_hw_writei(snd_pcm_t *pcm, const void *buffer, s
 	xferi.buf = (char*) buffer;
 	xferi.frames = size;
 	xferi.result = 0; /* make valgrind happy */
-	err = ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xferi);
-	err = err >= 0 ? sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL) : -errno;
+	if (ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xferi) < 0)
+		err = -errno;
+	else
+		err = query_status_and_control_data(hw);
 #ifdef DEBUG_RW
 	fprintf(stderr, "hw_writei: frames = %li, xferi.result = %li, err = %i\n", size, xferi.result, err);
 #endif
@@ -814,8 +874,10 @@ static snd_pcm_sframes_t snd_pcm_hw_writen(snd_pcm_t *pcm, void **bufs, snd_pcm_
 	memset(&xfern, 0, sizeof(xfern)); /* make valgrind happy */
 	xfern.bufs = bufs;
 	xfern.frames = size;
-	err = ioctl(fd, SNDRV_PCM_IOCTL_WRITEN_FRAMES, &xfern);
-	err = err >= 0 ? sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL) : -errno;
+	if (ioctl(fd, SNDRV_PCM_IOCTL_WRITEN_FRAMES, &xfern) < 0)
+		err = -errno;
+	else
+		err = query_status_and_control_data(hw);
 #ifdef DEBUG_RW
 	fprintf(stderr, "hw_writen: frames = %li, result = %li, err = %i\n", size, xfern.result, err);
 #endif
@@ -833,8 +895,10 @@ static snd_pcm_sframes_t snd_pcm_hw_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_
 	xferi.buf = buffer;
 	xferi.frames = size;
 	xferi.result = 0; /* make valgrind happy */
-	err = ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &xferi);
-	err = err >= 0 ? sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL) : -errno;
+	if (ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &xferi) < 0)
+		err = -errno;
+	else
+		err = query_status_and_control_data(hw);
 #ifdef DEBUG_RW
 	fprintf(stderr, "hw_readi: frames = %li, result = %li, err = %i\n", size, xferi.result, err);
 #endif
@@ -852,8 +916,10 @@ static snd_pcm_sframes_t snd_pcm_hw_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_u
 	memset(&xfern, 0, sizeof(xfern)); /* make valgrind happy */
 	xfern.bufs = bufs;
 	xfern.frames = size;
-	err = ioctl(fd, SNDRV_PCM_IOCTL_READN_FRAMES, &xfern);
-	err = err >= 0 ? sync_ptr(hw, SNDRV_PCM_SYNC_PTR_APPL) : -errno;
+	if (ioctl(fd, SNDRV_PCM_IOCTL_READN_FRAMES, &xfern) < 0)
+		err = -errno;
+	else
+		err = query_status_and_control_data(hw);
 #ifdef DEBUG_RW
 	fprintf(stderr, "hw_readn: frames = %li, result = %li, err = %i\n", size, xfern.result, err);
 #endif
@@ -862,94 +928,142 @@ static snd_pcm_sframes_t snd_pcm_hw_readn(snd_pcm_t *pcm, void **bufs, snd_pcm_u
 	return xfern.result;
 }
 
-static int snd_pcm_hw_mmap_status(snd_pcm_t *pcm)
+static bool map_status_data(snd_pcm_hw_t *hw, struct snd_pcm_sync_ptr *sync_ptr,
+			    bool force_fallback)
 {
-	snd_pcm_hw_t *hw = pcm->private_data;
-	struct snd_pcm_sync_ptr sync_ptr;
-	void *ptr;
-	int err;
-	ptr = MAP_FAILED;
-	if (hw->sync_ptr_ioctl == 0)
-		ptr = mmap(NULL, page_align(sizeof(struct snd_pcm_mmap_status)),
-			   PROT_READ, MAP_FILE|MAP_SHARED, 
-			   hw->fd, SNDRV_PCM_MMAP_OFFSET_STATUS);
-	if (ptr == MAP_FAILED || ptr == NULL) {
-		memset(&sync_ptr, 0, sizeof(sync_ptr));
-		sync_ptr.c.control.appl_ptr = 0;
-		sync_ptr.c.control.avail_min = 1;
-		err = ioctl(hw->fd, SNDRV_PCM_IOCTL_SYNC_PTR, &sync_ptr);
-		if (err < 0) {
-			err = -errno;
-			SYSMSG("SNDRV_PCM_IOCTL_SYNC_PTR failed (%i)", err);
-			return err;
-		}
-		hw->sync_ptr = calloc(1, sizeof(struct snd_pcm_sync_ptr));
-		if (hw->sync_ptr == NULL)
-			return -ENOMEM;
-		hw->mmap_status = &hw->sync_ptr->s.status;
-		hw->mmap_control = &hw->sync_ptr->c.control;
-		hw->sync_ptr_ioctl = 1;
-	} else {
-		hw->mmap_status = ptr;
+	struct snd_pcm_mmap_status *mmap_status;
+	bool fallbacked;
+
+	mmap_status = MAP_FAILED;
+	if (!force_fallback) {
+		mmap_status = mmap(NULL, page_align(sizeof(*mmap_status)),
+				   PROT_READ, MAP_FILE|MAP_SHARED,
+				   hw->fd, SNDRV_PCM_MMAP_OFFSET_STATUS);
 	}
-	snd_pcm_set_hw_ptr(pcm, &hw->mmap_status->hw_ptr, hw->fd, SNDRV_PCM_MMAP_OFFSET_STATUS + offsetof(struct snd_pcm_mmap_status, hw_ptr));
-	return 0;
+
+	if (mmap_status == MAP_FAILED || mmap_status == NULL) {
+		mmap_status = &sync_ptr->s.status;
+		fallbacked = true;
+	} else {
+		fallbacked = false;
+	}
+
+	hw->mmap_status = mmap_status;
+
+	return fallbacked;
 }
 
-static int snd_pcm_hw_mmap_control(snd_pcm_t *pcm)
+static bool map_control_data(snd_pcm_hw_t *hw,
+			     struct snd_pcm_sync_ptr *sync_ptr,
+			     bool force_fallback)
+{
+	struct snd_pcm_mmap_control *mmap_control;
+	bool fallbacked;
+
+	mmap_control = MAP_FAILED;
+	if (!force_fallback) {
+		mmap_control = mmap(NULL, page_align(sizeof(*mmap_control)),
+				    PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED,
+				    hw->fd, SNDRV_PCM_MMAP_OFFSET_CONTROL);
+	}
+
+	if (mmap_control == MAP_FAILED || mmap_control == NULL) {
+		mmap_control = &sync_ptr->c.control;
+		fallbacked = true;
+	} else {
+		fallbacked = false;
+	}
+
+	hw->mmap_control = mmap_control;
+
+	return fallbacked;
+}
+
+static int map_status_and_control_data(snd_pcm_t *pcm, bool force_fallback)
 {
 	snd_pcm_hw_t *hw = pcm->private_data;
-	void *ptr;
+	struct snd_pcm_sync_ptr *sync_ptr;
 	int err;
-	if (hw->sync_ptr == NULL) {
-		ptr = mmap(NULL, page_align(sizeof(struct snd_pcm_mmap_control)),
-			   PROT_READ|PROT_WRITE, MAP_FILE|MAP_SHARED, 
-			   hw->fd, SNDRV_PCM_MMAP_OFFSET_CONTROL);
-		if (ptr == MAP_FAILED || ptr == NULL) {
-			err = -errno;
-			SYSMSG("control mmap failed (%i)", err);
-			return err;
-		}
-		hw->mmap_control = ptr;
+
+	/* Preparation for fallback to failure of mmap(2). */
+	sync_ptr = malloc(sizeof(*sync_ptr));
+	if (sync_ptr == NULL)
+		return -ENOMEM;
+	memset(sync_ptr, 0, sizeof(*sync_ptr));
+
+	hw->mmap_status_fallbacked =
+			map_status_data(hw, sync_ptr, force_fallback);
+	hw->mmap_control_fallbacked =
+			map_control_data(hw, sync_ptr, force_fallback);
+
+	/* Any fallback mode needs to keep the buffer. */
+	if (hw->mmap_status_fallbacked || hw->mmap_control_fallbacked) {
+		hw->sync_ptr = sync_ptr;
 	} else {
+		free(sync_ptr);
+		hw->sync_ptr = NULL;
+	}
+
+	/* do not initialize in case of append and keep the values from the
+	 * kernel
+	 */
+	if (!(pcm->mode & SND_PCM_APPEND)) {
+		/* Initialize the data. */
+		hw->mmap_control->appl_ptr = 0;
 		hw->mmap_control->avail_min = 1;
 	}
-	snd_pcm_set_appl_ptr(pcm, &hw->mmap_control->appl_ptr, hw->fd, SNDRV_PCM_MMAP_OFFSET_CONTROL);
+	snd_pcm_set_hw_ptr(pcm, &hw->mmap_status->hw_ptr, hw->fd,
+			   SNDRV_PCM_MMAP_OFFSET_STATUS +
+				offsetof(struct snd_pcm_mmap_status, hw_ptr));
+	snd_pcm_set_appl_ptr(pcm, &hw->mmap_control->appl_ptr, hw->fd,
+			     SNDRV_PCM_MMAP_OFFSET_CONTROL);
+	if (hw->mmap_control_fallbacked) {
+		unsigned int flags = 0;
+		/* read appl_ptr and avail_min from kernel when device opened
+		 * with SND_PCM_APPEND flag
+		 */
+		if (pcm->mode & SND_PCM_APPEND)
+			flags = SNDRV_PCM_SYNC_PTR_APPL |
+				SNDRV_PCM_SYNC_PTR_AVAIL_MIN;
+		err = sync_ptr1(hw, flags);
+		if (err < 0)
+			return err;
+	}
+
 	return 0;
 }
 
-static int snd_pcm_hw_munmap_status(snd_pcm_t *pcm)
+static void unmap_status_data(snd_pcm_hw_t *hw)
 {
-	snd_pcm_hw_t *hw = pcm->private_data;
-	int err;
-	if (hw->sync_ptr_ioctl) {
-		free(hw->sync_ptr);
-		hw->sync_ptr = NULL;
-	} else {
-		if (munmap((void*)hw->mmap_status, page_align(sizeof(*hw->mmap_status))) < 0) {
-			err = -errno;
-			SYSMSG("status munmap failed (%i)", err);
-			return err;
-		}
+	if (!hw->mmap_status_fallbacked) {
+		if (munmap((void *)hw->mmap_status,
+			   page_align(sizeof(*hw->mmap_status))) < 0)
+			SYSMSG("status munmap failed (%u)", errno);
 	}
-	return 0;
 }
 
-static int snd_pcm_hw_munmap_control(snd_pcm_t *pcm)
+static void unmap_control_data(snd_pcm_hw_t *hw)
 {
-	snd_pcm_hw_t *hw = pcm->private_data;
-	int err;
-	if (hw->sync_ptr_ioctl) {
-		free(hw->sync_ptr);
-		hw->sync_ptr = NULL;
-	} else {
-		if (munmap(hw->mmap_control, page_align(sizeof(*hw->mmap_control))) < 0) {
-			err = -errno;
-			SYSMSG("control munmap failed (%i)", err);
-			return err;
-		}
+	if (!hw->mmap_control_fallbacked) {
+		if (munmap((void *)hw->mmap_control,
+			   page_align(sizeof(*hw->mmap_control))) < 0)
+			SYSMSG("control munmap failed (%u)", errno);
 	}
-	return 0;
+}
+
+static void unmap_status_and_control_data(snd_pcm_hw_t *hw)
+{
+	unmap_status_data(hw);
+	unmap_control_data(hw);
+
+	if (hw->mmap_status_fallbacked || hw->mmap_control_fallbacked)
+		free(hw->sync_ptr);
+
+	hw->mmap_status = NULL;
+	hw->mmap_control = NULL;
+	hw->mmap_status_fallbacked = false;
+	hw->mmap_control_fallbacked = false;
+	hw->sync_ptr = NULL;
 }
 
 static int snd_pcm_hw_mmap(snd_pcm_t *pcm ATTRIBUTE_UNUSED)
@@ -970,8 +1084,9 @@ static int snd_pcm_hw_close(snd_pcm_t *pcm)
 		err = -errno;
 		SYSMSG("close failed (%i)\n", err);
 	}
-	snd_pcm_hw_munmap_status(pcm);
-	snd_pcm_hw_munmap_control(pcm);
+
+	unmap_status_and_control_data(hw);
+
 	free(hw);
 	return err;
 }
@@ -983,7 +1098,7 @@ static snd_pcm_sframes_t snd_pcm_hw_mmap_commit(snd_pcm_t *pcm,
 	snd_pcm_hw_t *hw = pcm->private_data;
 
 	snd_pcm_mmap_appl_forward(pcm, size);
-	sync_ptr(hw, 0);
+	issue_applptr(hw);
 #ifdef DEBUG_MMAP
 	fprintf(stderr, "appl_forward: hw_ptr = %li, appl_ptr = %li, size = %li\n", *pcm->hw.ptr, *pcm->appl.ptr, size);
 #endif
@@ -995,7 +1110,7 @@ static snd_pcm_sframes_t snd_pcm_hw_avail_update(snd_pcm_t *pcm)
 	snd_pcm_hw_t *hw = pcm->private_data;
 	snd_pcm_uframes_t avail;
 
-	sync_ptr(hw, 0);
+	query_status_data(hw);
 	avail = snd_pcm_mmap_avail(pcm);
 	switch (FAST_PCM_STATE(hw)) {
 	case SNDRV_PCM_STATE_RUNNING:
@@ -1082,8 +1197,9 @@ snd_pcm_query_chmaps_from_hw(int card, int dev, int subdev,
 			     snd_pcm_stream_t stream)
 {
 	snd_ctl_t *ctl;
-	snd_ctl_elem_id_t *id;
+	snd_ctl_elem_id_t id = {0};
 	unsigned int tlv[2048], *start;
+	unsigned int type;
 	snd_pcm_chmap_query_t **map;
 	int i, ret, nums;
 
@@ -1093,9 +1209,8 @@ snd_pcm_query_chmaps_from_hw(int card, int dev, int subdev,
 		return NULL;
 	}
 
-	snd_ctl_elem_id_alloca(&id);
-	__fill_chmap_ctl_id(id, dev, subdev, stream);
-	ret = snd_ctl_elem_tlv_read(ctl, id, tlv, sizeof(tlv));
+	__fill_chmap_ctl_id(&id, dev, subdev, stream);
+	ret = snd_ctl_elem_tlv_read(ctl, &id, tlv, sizeof(tlv));
 	snd_ctl_close(ctl);
 	if (ret < 0) {
 		SYSMSG("Cannot read Channel Map TLV\n");
@@ -1109,9 +1224,10 @@ snd_pcm_query_chmaps_from_hw(int card, int dev, int subdev,
 	/* FIXME: the parser below assumes that the TLV only contains
 	 * chmap-related blocks
 	 */
-	if (tlv[0] != SND_CTL_TLVT_CONTAINER) {
-		if (!is_chmap_type(tlv[0])) {
-			SYSMSG("Invalid TLV type %d\n", tlv[0]);
+	type = tlv[SNDRV_CTL_TLVO_TYPE];
+	if (type != SND_CTL_TLVT_CONTAINER) {
+		if (!is_chmap_type(type)) {
+			SYSMSG("Invalid TLV type %d\n", type);
 			return NULL;
 		}
 		start = tlv;
@@ -1120,7 +1236,7 @@ snd_pcm_query_chmaps_from_hw(int card, int dev, int subdev,
 		unsigned int *p;
 		int size;
 		start = tlv + 2;
-		size = tlv[1];
+		size = tlv[SNDRV_CTL_TLVO_LEN];
 		nums = 0;
 		for (p = start; size > 0; ) {
 			if (!is_chmap_type(p[0])) {
@@ -1195,8 +1311,8 @@ static snd_pcm_chmap_t *snd_pcm_hw_get_chmap(snd_pcm_t *pcm)
 	snd_pcm_hw_t *hw = pcm->private_data;
 	snd_pcm_chmap_t *map;
 	snd_ctl_t *ctl;
-	snd_ctl_elem_id_t *id;
-	snd_ctl_elem_value_t *val;
+	snd_ctl_elem_id_t id = {0};
+	snd_ctl_elem_value_t val = {0};
 	unsigned int i;
 	int ret;
 
@@ -1230,11 +1346,9 @@ static snd_pcm_chmap_t *snd_pcm_hw_get_chmap(snd_pcm_t *pcm)
 		chmap_caps_set_error(hw, CHMAP_CTL_GET);
 		return NULL;
 	}
-	snd_ctl_elem_value_alloca(&val);
-	snd_ctl_elem_id_alloca(&id);
-	fill_chmap_ctl_id(pcm, id);
-	snd_ctl_elem_value_set_id(val, id);
-	ret = snd_ctl_elem_read(ctl, val);
+	fill_chmap_ctl_id(pcm, &id);
+	snd_ctl_elem_value_set_id(&val, &id);
+	ret = snd_ctl_elem_read(ctl, &val);
 	snd_ctl_close(ctl);
 	if (ret < 0) {
 		free(map);
@@ -1243,7 +1357,7 @@ static snd_pcm_chmap_t *snd_pcm_hw_get_chmap(snd_pcm_t *pcm)
 		return NULL;
 	}
 	for (i = 0; i < pcm->channels; i++)
-		map->pos[i] = snd_ctl_elem_value_get_integer(val, i);
+		map->pos[i] = snd_ctl_elem_value_get_integer(&val, i);
 	chmap_caps_set_ok(hw, CHMAP_CTL_GET);
 	return map;
 }
@@ -1252,8 +1366,8 @@ static int snd_pcm_hw_set_chmap(snd_pcm_t *pcm, const snd_pcm_chmap_t *map)
 {
 	snd_pcm_hw_t *hw = pcm->private_data;
 	snd_ctl_t *ctl;
-	snd_ctl_elem_id_t *id;
-	snd_ctl_elem_value_t *val;
+	snd_ctl_elem_id_t id = {0};
+	snd_ctl_elem_value_t val = {0};
 	unsigned int i;
 	int ret;
 
@@ -1278,13 +1392,12 @@ static int snd_pcm_hw_set_chmap(snd_pcm_t *pcm, const snd_pcm_chmap_t *map)
 		chmap_caps_set_error(hw, CHMAP_CTL_SET);
 		return ret;
 	}
-	snd_ctl_elem_id_alloca(&id);
-	snd_ctl_elem_value_alloca(&val);
-	fill_chmap_ctl_id(pcm, id);
-	snd_ctl_elem_value_set_id(val, id);
+
+	fill_chmap_ctl_id(pcm, &id);
+	snd_ctl_elem_value_set_id(&val, &id);
 	for (i = 0; i < map->channels; i++)
-		snd_ctl_elem_value_set_integer(val, i, map->pos[i]);
-	ret = snd_ctl_elem_write(ctl, val);
+		snd_ctl_elem_value_set_integer(&val, i, map->pos[i]);
+	ret = snd_ctl_elem_write(ctl, &val);
 	snd_ctl_close(ctl);
 	if (ret >= 0)
 		chmap_caps_set_ok(hw, CHMAP_CTL_SET);
@@ -1402,15 +1515,13 @@ static const snd_pcm_fast_ops_t snd_pcm_hw_fast_ops_timer = {
  * \param pcmp Returns created PCM handle
  * \param name Name of PCM
  * \param fd File descriptor
- * \param mmap_emulation Obsoleted parameter
  * \param sync_ptr_ioctl Boolean flag for sync_ptr ioctl
  * \retval zero on success otherwise a negative error code
  * \warning Using of this function might be dangerous in the sense
  *          of compatibility reasons. The prototype might be freely
  *          changed in future.
  */
-int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name,
-		       int fd, int mmap_emulation ATTRIBUTE_UNUSED,
+int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name, int fd,
 		       int sync_ptr_ioctl)
 {
 	int ver, mode;
@@ -1442,6 +1553,8 @@ int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name,
 		mode |= SND_PCM_NONBLOCK;
 	if (fmode & O_ASYNC)
 		mode |= SND_PCM_ASYNC;
+	if (fmode & O_APPEND)
+		mode |= SND_PCM_APPEND;
 
 	if (ioctl(fd, SNDRV_PCM_IOCTL_PVERSION, &ver) < 0) {
 		ret = -errno;
@@ -1451,6 +1564,16 @@ int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name,
 	}
 	if (SNDRV_PROTOCOL_INCOMPATIBLE(ver, SNDRV_PCM_VERSION_MAX))
 		return -SND_ERROR_INCOMPATIBLE_VERSION;
+
+	if (SNDRV_PROTOCOL_VERSION(2, 0, 14) <= ver) {
+		/* inform the protocol version we're supporting */
+		unsigned int user_ver = SNDRV_PCM_VERSION;
+		if (ioctl(fd, SNDRV_PCM_IOCTL_USER_PVERSION, &user_ver) < 0) {
+			ret = -errno;
+			SNDMSG("USER_PVERSION failed\n");
+			return ret;
+		}
+	}
 
 #if defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
 	if (SNDRV_PROTOCOL_VERSION(2, 0, 9) <= ver) {
@@ -1486,7 +1609,6 @@ int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name,
 	hw->device = info.device;
 	hw->subdevice = info.subdevice;
 	hw->fd = fd;
-	hw->sync_ptr_ioctl = sync_ptr_ioctl;
 	/* no restriction */
 	hw->format = SND_PCM_FORMAT_UNKNOWN;
 	hw->rate = 0;
@@ -1505,13 +1627,12 @@ int snd_pcm_hw_open_fd(snd_pcm_t **pcmp, const char *name,
 	pcm->poll_fd = fd;
 	pcm->poll_events = info.stream == SND_PCM_STREAM_PLAYBACK ? POLLOUT : POLLIN;
 	pcm->tstamp_type = tstamp_type;
+#ifdef THREAD_SAFE_API
+	pcm->need_lock = 0;	/* hw plugin is thread-safe */
+#endif
+	pcm->own_state_check = 1; /* skip the common state check */
 
-	ret = snd_pcm_hw_mmap_status(pcm);
-	if (ret < 0) {
-		snd_pcm_close(pcm);
-		return ret;
-	}
-	ret = snd_pcm_hw_mmap_control(pcm);
+	ret = map_status_and_control_data(pcm, !!sync_ptr_ioctl);
 	if (ret < 0) {
 		snd_pcm_close(pcm);
 		return ret;
@@ -1603,7 +1724,7 @@ int snd_pcm_hw_open(snd_pcm_t **pcmp, const char *name,
 		}
 	}
 	snd_ctl_close(ctl);
-	return snd_pcm_hw_open_fd(pcmp, name, fd, 0, sync_ptr_ioctl);
+	return snd_pcm_hw_open_fd(pcmp, name, fd, sync_ptr_ioctl);
        _err:
 	snd_ctl_close(ctl);
 	return ret;

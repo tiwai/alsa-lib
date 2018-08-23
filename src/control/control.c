@@ -24,7 +24,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -59,27 +59,27 @@ elements included in the element set.
 When the value of member is changed, corresponding events are transferred to
 userspace applications. The applications should subscribe any events in advance.
 
-\section tlv_blob Thredshold level and arbitrary data
+\section tlv_blob Supplemental data for elements in an element set
 
-TLV feature is designed to transfer data about threshold level between a driver
-and any userspace applications. The data is for an element set.
+TLV feature is designed to transfer data in a shape of Type/Length/Value,
+between a driver and any userspace applications. The main purpose is to attach
+supplement information for elements to an element set; e.g. dB range.
 
 At first, this feature was implemented to add pre-defined data readable to
 userspace applications. Soon, it was extended to handle several operations;
 read, write and command. The original implementation remains as the read
 operation. The command operation allows drivers to have own implementations
-against requests from userspace applications. As of 2016, simple write operation
-is not supported yet.
+against requests from userspace applications.
 
 This feature was introduced to ALSA control feature in 2006, at commit
 c7a0708a2362, corresponding to a series of work for Linux kernel (42750b04c5ba
 and 8aa9b586e420).
 
-This feature can transfer arbitrary data in a shape of an array with members of
-unsigned int type, therefore it can be used to deliver quite large arbitrary
-data from userspace to in-kernel drivers via ALSA control character device.
-Focusing on this nature, some in-kernel implementations utilize this feature for
-I/O operations.
+There's no limitation about maximum size of the data, therefore it can be used
+to deliver quite large arbitrary data from userspace to in-kernel drivers via
+ALSA control character device. Focusing on this nature, as of 2016, some
+in-kernel implementations utilize this feature for I/O operations. This is
+against the original design.
 */
 
 #include <stdio.h>
@@ -90,7 +90,7 @@ I/O operations.
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <stdbool.h>
 #include "control_local.h"
 
@@ -371,7 +371,7 @@ static bool validate_element_member_dimension(snd_ctl_elem_info_t *info)
  * \par Compatibility:
  * This function is added in version 1.1.2.
  */
-int snd_ctl_elem_add_integer_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+int snd_ctl_add_integer_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				 unsigned int element_count,
 				 unsigned int member_count,
 				 long min, long max, long step)
@@ -382,7 +382,8 @@ int snd_ctl_elem_add_integer_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	unsigned int numid;
 	int err;
 
-	assert(ctl && info && info->id.name[0]);
+	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_INTEGER;
 	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -460,7 +461,7 @@ int snd_ctl_elem_add_integer_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
  * \par Compatibility:
  * This function is added in version 1.1.2.
  */
-int snd_ctl_elem_add_integer64_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+int snd_ctl_add_integer64_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				   unsigned int element_count,
 				   unsigned int member_count,
 				   long long min, long long max, long long step)
@@ -471,7 +472,8 @@ int snd_ctl_elem_add_integer64_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	unsigned int numid;
 	int err;
 
-	assert(ctl && info && info->id.name[0]);
+	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_INTEGER64;
 	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -545,11 +547,12 @@ int snd_ctl_elem_add_integer64_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
  * \par Compatibility:
  * This function is added in version 1.1.2.
  */
-int snd_ctl_elem_add_boolean_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+int snd_ctl_add_boolean_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				 unsigned int element_count,
 				 unsigned int member_count)
 {
-	assert(ctl && info && info->id.name[0]);
+	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_BOOLEAN;
 	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -609,7 +612,7 @@ int snd_ctl_elem_add_boolean_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
  * \par Compatibility:
  * This function is added in version 1.1.2.
  */
-int snd_ctl_elem_add_enumerated_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+int snd_ctl_add_enumerated_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				    unsigned int element_count,
 				    unsigned int member_count,
 				    unsigned int items,
@@ -619,7 +622,9 @@ int snd_ctl_elem_add_enumerated_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	char *buf, *p;
 	int err;
 
-	assert(ctl && info && info->id.name[0] && labels);
+	if (ctl == NULL || info == NULL || info->id.name[0] == '\0' ||
+	    labels == NULL)
+		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_ENUMERATED;
 	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -694,11 +699,12 @@ int snd_ctl_elem_add_enumerated_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
  * \par Compatibility:
  * This function is added in version 1.1.2.
  */
-int snd_ctl_elem_add_bytes_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+int snd_ctl_add_bytes_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 			       unsigned int element_count,
 			       unsigned int member_count)
 {
-	assert(ctl && info && info->id.name[0]);
+	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_BYTES;
 	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -716,9 +722,9 @@ int snd_ctl_elem_add_bytes_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 /**
  * \brief Create and add an user-defined control element of integer type.
  *
- * This is a wrapper function to snd_ctl_elem_add_integer_set() for a control
+ * This is a wrapper function to snd_ctl_add_integer_elem_set() for a control
  * element. This doesn't fill the id data with full information, thus it's
- * recommended to use snd_ctl_elem_add_integer_set(), instead.
+ * recommended to use snd_ctl_add_integer_elem_set(), instead.
  */
 int snd_ctl_elem_add_integer(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			     unsigned int member_count,
@@ -726,18 +732,20 @@ int snd_ctl_elem_add_integer(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 {
 	snd_ctl_elem_info_t info = {0};
 
+	assert(ctl && id && id->name[0]);
+
 	info.id = *id;
 
-	return snd_ctl_elem_add_integer_set(ctl, &info, 1, member_count,
+	return snd_ctl_add_integer_elem_set(ctl, &info, 1, member_count,
 					    min, max, step);
 }
 
 /**
  * \brief Create and add an user-defined control element of integer64 type.
  *
- * This is a wrapper function to snd_ctl_elem_add_integer64_set() for a single
+ * This is a wrapper function to snd_ctl_add_integer64_elem_set() for a single
  * control element. This doesn't fill the id data with full information, thus
- * it's recommended to use snd_ctl_elem_add_integer64_set(), instead.
+ * it's recommended to use snd_ctl_add_integer64_elem_set(), instead.
  */
 int snd_ctl_elem_add_integer64(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			       unsigned int member_count,
@@ -745,35 +753,39 @@ int snd_ctl_elem_add_integer64(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 {
 	snd_ctl_elem_info_t info = {0};
 
+	assert(ctl && id && id->name[0]);
+
 	info.id = *id;
 
-	return snd_ctl_elem_add_integer64_set(ctl, &info, 1, member_count,
+	return snd_ctl_add_integer64_elem_set(ctl, &info, 1, member_count,
 					      min, max, step);
 }
 
 /**
  * \brief Create and add an user-defined control element of boolean type.
  *
- * This is a wrapper function to snd_ctl_elem_add_boolean_set() for a single
+ * This is a wrapper function to snd_ctl_add_boolean_elem_set() for a single
  * control element. This doesn't fill the id data with full information, thus
- * it's recommended to use snd_ctl_elem_add_boolean_set(), instead.
+ * it's recommended to use snd_ctl_add_boolean_elem_set(), instead.
  */
 int snd_ctl_elem_add_boolean(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			     unsigned int member_count)
 {
 	snd_ctl_elem_info_t info = {0};
 
+	assert(ctl && id && id->name[0]);
+
 	info.id = *id;
 
-	return snd_ctl_elem_add_boolean_set(ctl, &info, 1, member_count);
+	return snd_ctl_add_boolean_elem_set(ctl, &info, 1, member_count);
 }
 
 /**
  * \brief Create and add a user-defined control element of enumerated type.
  *
- * This is a wrapper function to snd_ctl_elem_add_enumerated_set() for a single
+ * This is a wrapper function to snd_ctl_add_enumerated_elem_set() for a single
  * control element. This doesn't fill the id data with full information, thus
- * it's recommended to use snd_ctl_elem_add_enumerated_set(), instead.
+ * it's recommended to use snd_ctl_add_enumerated_elem_set(), instead.
  *
  * This function is added in version 1.0.25.
  */
@@ -783,9 +795,11 @@ int snd_ctl_elem_add_enumerated(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 {
 	snd_ctl_elem_info_t info = {0};
 
+	assert(ctl && id && id->name[0] && labels);
+
 	info.id = *id;
 
-	return snd_ctl_elem_add_enumerated_set(ctl, &info, 1, member_count,
+	return snd_ctl_add_enumerated_elem_set(ctl, &info, 1, member_count,
 					       items, labels);
 }
 
@@ -898,12 +912,19 @@ static int snd_ctl_tlv_do(snd_ctl_t *ctl, int op_flag,
 }
 
 /**
- * \brief Set given data to an element as threshold level.
+ * \brief Read structured data from an element set to given buffer.
  * \param ctl A handle of backend module for control interface.
  * \param id ID of an element.
  * \param tlv An array with members of unsigned int type.
  * \param tlv_size The length of the array.
  * \return 0 on success otherwise a negative error code
+ *
+ * The format of an array of \a tlv argument is:
+ *   tlv[0]:   Type. One of SND_CTL_TLVT_XXX.
+ *   tlv[1]:   Length. The length of value in units of byte.
+ *   tlv[2..]: Value. Depending on the type.
+ *
+ * Details are described in <sound/tlv.h>.
  */
 int snd_ctl_elem_tlv_read(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			  unsigned int *tlv, unsigned int tlv_size)
@@ -917,16 +938,16 @@ int snd_ctl_elem_tlv_read(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 	 * and compare the returned value after ioctl for checking
 	 * the validity of TLV.
 	 */
-	tlv[0] = -1;
-	tlv[1] = 0;
+	tlv[SNDRV_CTL_TLVO_TYPE] = -1;
+	tlv[SNDRV_CTL_TLVO_LEN] = 0;
 	err = snd_ctl_tlv_do(ctl, 0, id, tlv, tlv_size);
-	if (err >= 0 && tlv[0] == (unsigned int)-1)
+	if (err >= 0 && tlv[SNDRV_CTL_TLVO_TYPE] == (unsigned int)-1)
 		err = -ENXIO;
 	return err;
 }
 
 /**
- * \brief Set given data to an element as threshold level.
+ * \brief Write structured data from given buffer to an element set.
  * \param ctl A handle of backend module for control interface.
  * \param id ID of an element.
  * \param tlv An array with members of unsigned int type. The second member
@@ -934,16 +955,24 @@ int snd_ctl_elem_tlv_read(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
  * \retval 0 on success
  * \retval >0 on success when value was changed
  * \retval <0 a negative error code
+ *
+ * The format of an array of \a tlv argument is:
+ *   tlv[0]:   Type. One of SND_CTL_TLVT_XXX.
+ *   tlv[1]:   Length. The length of value in units of byte.
+ *   tlv[2..]: Value. Depending on the type.
+ *
+ * Details are described in <sound/tlv.h>.
  */
 int snd_ctl_elem_tlv_write(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			   const unsigned int *tlv)
 {
 	assert(ctl && id && (id->name[0] || id->numid) && tlv);
-	return snd_ctl_tlv_do(ctl, 1, id, (unsigned int *)tlv, tlv[1] + 2 * sizeof(unsigned int));
+	return snd_ctl_tlv_do(ctl, 1, id, (unsigned int *)tlv,
+			tlv[SNDRV_CTL_TLVO_LEN] + 2 * sizeof(unsigned int));
 }
 
 /**
- * \brief Set given data to an element as threshold level.
+ * \brief Process structured data from given buffer for an element set.
  * \param ctl A handle of backend module for control interface.
  * \param id ID of an element.
  * \param tlv An array with members of unsigned int type. The second member
@@ -951,12 +980,20 @@ int snd_ctl_elem_tlv_write(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
  * \retval 0 on success
  * \retval >0 on success when value was changed
  * \retval <0 a negative error code
+ *
+ * The format of an array of \a tlv argument is:
+ *   tlv[0]:   Type. One of SND_CTL_TLVT_XXX.
+ *   tlv[1]:   Length. The length of value in units of byte.
+ *   tlv[2..]: Value. Depending on the type.
+ *
+ * Details are described in <sound/tlv.h>.
  */
 int snd_ctl_elem_tlv_command(snd_ctl_t *ctl, const snd_ctl_elem_id_t *id,
 			     const unsigned int *tlv)
 {
 	assert(ctl && id && (id->name[0] || id->numid) && tlv);
-	return snd_ctl_tlv_do(ctl, -1, id, (unsigned int *)tlv, tlv[1] + 2 * sizeof(unsigned int));
+	return snd_ctl_tlv_do(ctl, -1, id, (unsigned int *)tlv,
+			tlv[SNDRV_CTL_TLVO_LEN] + 2 * sizeof(unsigned int));
 }
 
 /**
@@ -2468,6 +2505,9 @@ const char *snd_ctl_elem_info_get_item_name(const snd_ctl_elem_info_t *obj)
  * \brief Get count of dimensions for given element
  * \param obj CTL element id/info
  * \return zero value if no dimensions are defined, otherwise positive value with count of dimensions
+ *
+ * \deprecated	Since 1.1.5
+ * #snd_ctl_elem_info_get_dimensions is deprecated without any replacement.
  */
 #ifndef DOXYGEN
 int INTERNAL(snd_ctl_elem_info_get_dimensions)(const snd_ctl_elem_info_t *obj)
@@ -2490,6 +2530,9 @@ use_default_symbol_version(__snd_ctl_elem_info_get_dimensions, snd_ctl_elem_info
  * \param obj CTL element id/info
  * \param idx The dimension index
  * \return zero value if no dimension width is defined, otherwise positive value with with of specified dimension
+ *
+ * \deprecated	Since 1.1.5
+ * #snd_ctl_elem_info_get_dimension is deprecated without any replacement.
  */
 #ifndef DOXYGEN
 int INTERNAL(snd_ctl_elem_info_get_dimension)(const snd_ctl_elem_info_t *obj, unsigned int idx)
@@ -2515,6 +2558,12 @@ use_default_symbol_version(__snd_ctl_elem_info_get_dimension, snd_ctl_elem_info_
  * <dt>-EINVAL
  * <dd>Invalid arguments are given as parameters.
  * </dl>
+ *
+ * \par Compatibility:
+ * This function is added in version 1.1.2.
+ *
+ * \deprecated Since 1.1.5
+ * #snd_ctl_elem_info_set_dimension is deprecated without any replacement.
  */
 int snd_ctl_elem_info_set_dimension(snd_ctl_elem_info_t *info,
 				    const int dimension[4])

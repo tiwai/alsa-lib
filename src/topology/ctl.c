@@ -2,14 +2,15 @@
   Copyright(c) 2014-2015 Intel Corporation
   All rights reserved.
 
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of version 2 of the GNU General Public License as
-  published by the Free Software Foundation.
+  This library is free software; you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as
+  published by the Free Software Foundation; either version 2.1 of
+  the License, or (at your option) any later version.
 
-  This program is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
 
   Authors: Mengdong Lin <mengdong.lin@intel.com>
            Yao Jin <yao.jin@intel.com>
@@ -41,7 +42,6 @@ static const struct ctl_access_elem ctl_access[] = {
 	{"lock", SNDRV_CTL_ELEM_ACCESS_LOCK},
 	{"owner", SNDRV_CTL_ELEM_ACCESS_OWNER},
 	{"tlv_callback", SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK},
-	{"user", SNDRV_CTL_ELEM_ACCESS_USER},
 };
 
 /* find CTL access strings and conver to values */
@@ -130,19 +130,19 @@ static int tplg_build_mixer_control(snd_tplg_t *tplg,
 	list_for_each(pos, base) {
 
 		ref = list_entry(pos, struct tplg_ref, list);
-		if (ref->id == NULL || ref->elem)
+		if (ref->elem)
 			continue;
 
 		if (ref->type == SND_TPLG_TYPE_TLV) {
 			ref->elem = tplg_elem_lookup(&tplg->tlv_list,
-						ref->id, SND_TPLG_TYPE_TLV);
+				ref->id, SND_TPLG_TYPE_TLV, elem->index);
 			if (ref->elem)
 				 err = copy_tlv(elem, ref->elem);
 
 		} else if (ref->type == SND_TPLG_TYPE_DATA) {
-			ref->elem = tplg_elem_lookup(&tplg->pdata_list,
-						ref->id, SND_TPLG_TYPE_DATA);
-			 err = tplg_copy_data(elem, ref->elem);
+			err = tplg_copy_data(tplg, elem, ref);
+			if (err < 0)
+				return err;
 		}
 
 		if (!ref->elem) {
@@ -160,9 +160,11 @@ static void copy_enum_texts(struct tplg_elem *enum_elem,
 	struct tplg_elem *ref_elem)
 {
 	struct snd_soc_tplg_enum_control *ec = enum_elem->enum_ctrl;
+	struct tplg_texts *texts = ref_elem->texts;
 
-	memcpy(ec->texts, ref_elem->texts,
+	memcpy(ec->texts, texts->items,
 		SND_SOC_TPLG_NUM_TEXTS * SNDRV_CTL_ELEM_ID_NAME_MAXLEN);
+	ec->items += texts->num_items;
 }
 
 /* check referenced text for a enum control */
@@ -171,33 +173,32 @@ static int tplg_build_enum_control(snd_tplg_t *tplg,
 {
 	struct tplg_ref *ref;
 	struct list_head *base, *pos;
-	int err = 0;
+	int err;
 
 	base = &elem->ref_list;
 
 	list_for_each(pos, base) {
 
 		ref = list_entry(pos, struct tplg_ref, list);
-		if (ref->id == NULL || ref->elem)
+		if (ref->elem)
 			continue;
 
 		if (ref->type == SND_TPLG_TYPE_TEXT) {
 			ref->elem = tplg_elem_lookup(&tplg->text_list,
-						ref->id, SND_TPLG_TYPE_TEXT);
+				ref->id, SND_TPLG_TYPE_TEXT, elem->index);
 			if (ref->elem)
 				copy_enum_texts(elem, ref->elem);
 
 		} else if (ref->type == SND_TPLG_TYPE_DATA) {
-			ref->elem = tplg_elem_lookup(&tplg->pdata_list,
-						ref->id, SND_TPLG_TYPE_DATA);
-			err = tplg_copy_data(elem, ref->elem);
+			err = tplg_copy_data(tplg, elem, ref);
+			if (err < 0)
+				return err;
 		}
 		if (!ref->elem) {
 			SNDERR("error: cannot find '%s' referenced by"
 				" control '%s'\n", ref->id, elem->id);
 			return -EINVAL;
-		} else if (err < 0)
-			return err;
+		}
 	}
 
 	return 0;
@@ -208,27 +209,21 @@ static int tplg_build_bytes_control(snd_tplg_t *tplg, struct tplg_elem *elem)
 {
 	struct tplg_ref *ref;
 	struct list_head *base, *pos;
+	int err;
 
 	base = &elem->ref_list;
 
 	list_for_each(pos, base) {
 
 		ref = list_entry(pos, struct tplg_ref, list);
-		if (ref->id == NULL || ref->elem)
+		if (ref->elem)
 			continue;
 
-		/* bytes control only reference one private data section */
-		ref->elem = tplg_elem_lookup(&tplg->pdata_list,
-			ref->id, SND_TPLG_TYPE_DATA);
-		if (!ref->elem) {
-			SNDERR("error: cannot find data '%s'"
-				" referenced by control '%s'\n",
-				ref->id, elem->id);
-			return -EINVAL;
+		 if (ref->type == SND_TPLG_TYPE_DATA) {
+			err = tplg_copy_data(tplg, elem, ref);
+			if (err < 0)
+				return err;
 		}
-
-		/* copy texts to enum elem */
-		return tplg_copy_data(elem, ref->elem);
 	}
 
 	return 0;
@@ -401,15 +396,6 @@ int tplg_parse_control_bytes(snd_tplg_t *tplg,
 		if (id[0] == '#')
 			continue;
 
-		if (strcmp(id, "index") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			elem->index = atoi(val);
-			tplg_dbg("\t%s: %d\n", id, elem->index);
-			continue;
-		}
-
 		if (strcmp(id, "base") == 0) {
 			if (snd_config_get_string(n, &val) < 0)
 				return -EINVAL;
@@ -447,11 +433,9 @@ int tplg_parse_control_bytes(snd_tplg_t *tplg,
 		}
 
 		if (strcmp(id, "data") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			tplg_ref_add(elem, SND_TPLG_TYPE_DATA, val);
-			tplg_dbg("\t%s: %s\n", id, val);
+			err = tplg_parse_data_refs(n, elem);
+			if (err < 0)
+				return err;
 			continue;
 		}
 
@@ -544,15 +528,6 @@ int tplg_parse_control_enum(snd_tplg_t *tplg, snd_config_t *cfg,
 		if (id[0] == '#')
 			continue;
 
-		if (strcmp(id, "index") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			elem->index = atoi(val);
-			tplg_dbg("\t%s: %d\n", id, elem->index);
-			continue;
-		}
-
 		if (strcmp(id, "texts") == 0) {
 			if (snd_config_get_string(n, &val) < 0)
 				return -EINVAL;
@@ -587,11 +562,9 @@ int tplg_parse_control_enum(snd_tplg_t *tplg, snd_config_t *cfg,
 		}
 
 		if (strcmp(id, "data") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			tplg_ref_add(elem, SND_TPLG_TYPE_DATA, val);
-			tplg_dbg("\t%s: %s\n", id, val);
+			err = tplg_parse_data_refs(n, elem);
+			if (err < 0)
+				return err;
 			continue;
 		}
 
@@ -656,15 +629,6 @@ int tplg_parse_control_mixer(snd_tplg_t *tplg,
 		if (id[0] == '#')
 			continue;
 
-		if (strcmp(id, "index") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			elem->index = atoi(val);
-			tplg_dbg("\t%s: %d\n", id, elem->index);
-			continue;
-		}
-
 		if (strcmp(id, "channel") == 0) {
 			if (mc->num_channels >= SND_SOC_TPLG_MAX_CHAN) {
 				SNDERR("error: too many channels %s\n",
@@ -725,11 +689,9 @@ int tplg_parse_control_mixer(snd_tplg_t *tplg,
 		}
 
 		if (strcmp(id, "data") == 0) {
-			if (snd_config_get_string(n, &val) < 0)
-				return -EINVAL;
-
-			tplg_ref_add(elem, SND_TPLG_TYPE_DATA, val);
-			tplg_dbg("\t%s: %s\n", id, val);
+			err = tplg_parse_data_refs(n, elem);
+			if (err < 0)
+				return err;
 			continue;
 		}
 
@@ -926,7 +888,7 @@ int tplg_add_enum(snd_tplg_t *tplg, struct snd_tplg_enum_template *enum_ctl,
 
 	if (enum_ctl->values != NULL) {
 		for (i = 0; i < num_items; i++) {
-			if (enum_ctl->values[i])
+			if (enum_ctl->values[i] == NULL)
 				continue;
 
 			memcpy(&ec->values[i * sizeof(int) * ENUM_VAL_SIZE],

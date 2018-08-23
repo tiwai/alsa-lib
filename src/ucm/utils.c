@@ -11,7 +11,7 @@
  *
  *  You should have received a copy of the GNU Lesser General Public
  *  License along with this library; if not, write to the Free Software  
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  *  Support for the verb/device/modifier core logic and API,
  *  command line tool and file parser was kindly sponsored by
@@ -210,6 +210,7 @@ void uc_mgr_free_verb(snd_use_case_mgr_t *uc_mgr)
 		uc_mgr_free_transition(&verb->transition_list);
 		uc_mgr_free_value(&verb->value_list);
 		uc_mgr_free_device(&verb->device_list);
+		uc_mgr_free_device(&verb->cmpt_device_list);
 		uc_mgr_free_modifier(&verb->modifier_list);
 		list_del(&verb->list);
 		free(verb);

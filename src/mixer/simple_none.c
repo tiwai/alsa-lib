@@ -25,7 +25,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -38,7 +38,7 @@
 #include <assert.h>
 #include <math.h>
 #include <limits.h>
-#include <alsa/asoundlib.h>
+#include "local.h"
 #include "config.h"
 #include "mixer_simple.h"
 
@@ -234,36 +234,36 @@ static long from_user(selem_none_t *s, int dir, selem_ctl_t *c, long value)
 
 static int elem_read_volume(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < s->str[dir].channels; idx++) {
 		unsigned int idx1 = idx;
 		if (idx >= c->values)
 			idx1 = 0;
-		s->str[dir].vol[idx] = to_user(s, dir, c, snd_ctl_elem_value_get_integer(ctl, idx1));
+		s->str[dir].vol[idx] =
+			to_user(s, dir, c,
+				snd_ctl_elem_value_get_integer(&ctl, idx1));
 	}
 	return 0;
 }
 
 static int elem_read_switch(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < s->str[dir].channels; idx++) {
 		unsigned int idx1 = idx;
 		if (idx >= c->values)
 			idx1 = 0;
-		if (!snd_ctl_elem_value_get_integer(ctl, idx1))
+		if (!snd_ctl_elem_value_get_integer(&ctl, idx1))
 			s->str[dir].sw &= ~(1 << idx);
 	}
 	return 0;
@@ -271,18 +271,18 @@ static int elem_read_switch(selem_none_t *s, int dir, selem_ctl_type_t type)
 
 static int elem_read_route(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < s->str[dir].channels; idx++) {
 		unsigned int idx1 = idx;
 		if (idx >= c->values)
 			idx1 = 0;
-		if (!snd_ctl_elem_value_get_integer(ctl, idx1 * c->values + idx1))
+		if (!snd_ctl_elem_value_get_integer(&ctl,
+						    idx1 * c->values + idx1))
 			s->str[dir].sw &= ~(1 << idx);
 	}
 	return 0;
@@ -290,27 +290,28 @@ static int elem_read_route(selem_none_t *s, int dir, selem_ctl_type_t type)
 
 static int elem_read_enum(selem_none_t *s)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	int type;
 	selem_ctl_t *c;
 	type = CTL_GLOBAL_ENUM;
-	if ( (s->selem.caps & (SM_CAP_CENUM | SM_CAP_PENUM)) == (SM_CAP_CENUM | SM_CAP_PENUM) )
+	if ((s->selem.caps & (SM_CAP_CENUM | SM_CAP_PENUM)) ==
+						(SM_CAP_CENUM | SM_CAP_PENUM))
 		type = CTL_GLOBAL_ENUM;
 	else if (s->selem.caps & SM_CAP_PENUM)
 		type = CTL_PLAYBACK_ENUM;
 	else if (s->selem.caps & SM_CAP_CENUM)
 		type = CTL_CAPTURE_ENUM;
 	c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < s->str[0].channels; idx++) {
 		unsigned int idx1 = idx;
 		if (idx >= c->values)
 			idx1 = 0;
-		s->str[0].vol[idx] = snd_ctl_elem_value_get_enumerated(ctl, idx1);
+		s->str[0].vol[idx] =
+				snd_ctl_elem_value_get_enumerated(&ctl, idx1);
 	}
 	return 0;
 }
@@ -440,17 +441,17 @@ static int selem_read(snd_mixer_elem_t *elem)
 			return err;
 	}
 	if (s->ctls[CTL_CAPTURE_SOURCE].elem) {
-		snd_ctl_elem_value_t *ctl;
+		snd_ctl_elem_value_t ctl = {0};
 		selem_ctl_t *c = &s->ctls[CTL_CAPTURE_SOURCE];
-		snd_ctl_elem_value_alloca(&ctl);
-		err = snd_hctl_elem_read(c->elem, ctl);
+		err = snd_hctl_elem_read(c->elem, &ctl);
 		if (err < 0)
 			return err;
 		for (idx = 0; idx < s->str[SM_CAPT].channels; idx++) {
 			unsigned int idx1 = idx;
 			if (idx >= c->values)
 				idx1 = 0;
-			if (snd_ctl_elem_value_get_enumerated(ctl, idx1) != s->capture_item)
+			if (snd_ctl_elem_value_get_enumerated(&ctl, idx1) !=
+								s->capture_item)
 				s->str[SM_CAPT].sw &= ~(1 << idx);
 		}
 	}
@@ -466,91 +467,91 @@ static int selem_read(snd_mixer_elem_t *elem)
 
 static int elem_write_volume(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < c->values; idx++)
-		snd_ctl_elem_value_set_integer(ctl, idx, from_user(s, dir, c, s->str[dir].vol[idx]));
-	if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		snd_ctl_elem_value_set_integer(&ctl, idx,
+				from_user(s, dir, c, s->str[dir].vol[idx]));
+	if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 		return err;
 	return 0;
 }
 
 static int elem_write_switch(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < c->values; idx++)
-		snd_ctl_elem_value_set_integer(ctl, idx, !!(s->str[dir].sw & (1 << idx)));
-	if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		snd_ctl_elem_value_set_integer(&ctl, idx,
+					!!(s->str[dir].sw & (1 << idx)));
+	if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 		return err;
 	return 0;
 }
 
 static int elem_write_switch_constant(selem_none_t *s, selem_ctl_type_t type, int val)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < c->values; idx++)
-		snd_ctl_elem_value_set_integer(ctl, idx, !!val);
-	if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		snd_ctl_elem_value_set_integer(&ctl, idx, !!val);
+	if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 		return err;
 	return 0;
 }
 
 static int elem_write_route(selem_none_t *s, int dir, selem_ctl_type_t type)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	selem_ctl_t *c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < c->values * c->values; idx++)
-		snd_ctl_elem_value_set_integer(ctl, idx, 0);
+		snd_ctl_elem_value_set_integer(&ctl, idx, 0);
 	for (idx = 0; idx < c->values; idx++)
-		snd_ctl_elem_value_set_integer(ctl, idx * c->values + idx, !!(s->str[dir].sw & (1 << idx)));
-	if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		snd_ctl_elem_value_set_integer(&ctl, idx * c->values + idx,
+					       !!(s->str[dir].sw & (1 << idx)));
+	if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 		return err;
 	return 0;
 }
 
 static int elem_write_enum(selem_none_t *s)
 {
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	unsigned int idx;
 	int err;
 	int type;
 	selem_ctl_t *c;
 	type = CTL_GLOBAL_ENUM;
-	if ( (s->selem.caps & (SM_CAP_CENUM | SM_CAP_PENUM) ) == (SM_CAP_CENUM | SM_CAP_PENUM) )
+	if ((s->selem.caps & (SM_CAP_CENUM | SM_CAP_PENUM)) ==
+						(SM_CAP_CENUM | SM_CAP_PENUM))
 		type = CTL_GLOBAL_ENUM;
 	else if (s->selem.caps & SM_CAP_PENUM)
 		type = CTL_PLAYBACK_ENUM;
 	else if (s->selem.caps & SM_CAP_CENUM)
 		type = CTL_CAPTURE_ENUM;
 	c = &s->ctls[type];
-	snd_ctl_elem_value_alloca(&ctl);
-	if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+	if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 		return err;
 	for (idx = 0; idx < c->values; idx++)
-		snd_ctl_elem_value_set_enumerated(ctl, idx, (unsigned int)s->str[0].vol[idx]);
-	if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		snd_ctl_elem_value_set_enumerated(&ctl, idx,
+					(unsigned int)s->str[0].vol[idx]);
+	if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 		return err;
 	return 0;
 }
@@ -587,8 +588,10 @@ static int selem_write_main(snd_mixer_elem_t *elem)
 			return err;
 	}
 	if (s->ctls[CTL_GLOBAL_SWITCH].elem) {
-		if (s->ctls[CTL_PLAYBACK_SWITCH].elem && s->ctls[CTL_CAPTURE_SWITCH].elem)
-			err = elem_write_switch_constant(s, CTL_GLOBAL_SWITCH, 1);
+		if (s->ctls[CTL_PLAYBACK_SWITCH].elem &&
+					s->ctls[CTL_CAPTURE_SWITCH].elem)
+			err = elem_write_switch_constant(s, CTL_GLOBAL_SWITCH,
+							 1);
 		else
 			err = elem_write_switch(s, SM_PLAY, CTL_GLOBAL_SWITCH);
 		if (err < 0)
@@ -625,16 +628,16 @@ static int selem_write_main(snd_mixer_elem_t *elem)
 			return err;
 	}
 	if (s->ctls[CTL_CAPTURE_SOURCE].elem) {
-		snd_ctl_elem_value_t *ctl;
+		snd_ctl_elem_value_t ctl = {0};
 		selem_ctl_t *c = &s->ctls[CTL_CAPTURE_SOURCE];
-		snd_ctl_elem_value_alloca(&ctl);
-		if ((err = snd_hctl_elem_read(c->elem, ctl)) < 0)
+		if ((err = snd_hctl_elem_read(c->elem, &ctl)) < 0)
 			return err;
 		for (idx = 0; idx < c->values; idx++) {
 			if (s->str[SM_CAPT].sw & (1 << idx))
-				snd_ctl_elem_value_set_enumerated(ctl, idx, s->capture_item);
+				snd_ctl_elem_value_set_enumerated(&ctl,
+							idx, s->capture_item);
 		}
-		if ((err = snd_hctl_elem_write(c->elem, ctl)) < 0)
+		if ((err = snd_hctl_elem_write(c->elem, &ctl)) < 0)
 			return err;
 		/* update the element, don't remove */
 		err = selem_read(elem);
@@ -1095,7 +1098,7 @@ static int convert_to_dB(snd_hctl_elem_t *ctl, struct selem_str *rec,
  */
 static int init_db_range(snd_hctl_elem_t *ctl, struct selem_str *rec)
 {
-	snd_ctl_elem_info_t *info;
+	snd_ctl_elem_info_t info = {0};
 	unsigned int *tlv = NULL;
 	const unsigned int tlv_size = 4096;
 	unsigned int *dbrec;
@@ -1106,13 +1109,12 @@ static int init_db_range(snd_hctl_elem_t *ctl, struct selem_str *rec)
 	if (rec->db_initialized)
 		return 0;
 
-	snd_ctl_elem_info_alloca(&info);
-	if (snd_hctl_elem_info(ctl, info) < 0)
+	if (snd_hctl_elem_info(ctl, &info) < 0)
 		goto error;
-	if (! snd_ctl_elem_info_is_tlv_readable(info))
+	if (!snd_ctl_elem_info_is_tlv_readable(&info))
 		goto error;
 	tlv = malloc(tlv_size);
-	if (! tlv)
+	if (!tlv)
 		return -ENOMEM;
 	if (snd_hctl_elem_tlv_read(ctl, tlv, tlv_size) < 0)
 		goto error;
@@ -1311,7 +1313,7 @@ static int enum_item_name_ops(snd_mixer_elem_t *elem,
 			      size_t maxlen, char *buf)
 {
 	selem_none_t *s = snd_mixer_elem_get_private(elem);
-	snd_ctl_elem_info_t *info;
+	snd_ctl_elem_info_t info = {0};
 	snd_hctl_elem_t *helem;
 	int type;
 
@@ -1328,11 +1330,10 @@ static int enum_item_name_ops(snd_mixer_elem_t *elem,
 	assert(helem);
 	if (item >= (unsigned int)s->ctls[type].max)
 		return -EINVAL;
-	snd_ctl_elem_info_alloca(&info);
-	snd_hctl_elem_info(helem, info);
-	snd_ctl_elem_info_set_item(info, item);
-	snd_hctl_elem_info(helem, info);
-	strncpy(buf, snd_ctl_elem_info_get_item_name(info), maxlen);
+	snd_hctl_elem_info(helem, &info);
+	snd_ctl_elem_info_set_item(&info, item);
+	snd_hctl_elem_info(helem, &info);
+	strncpy(buf, snd_ctl_elem_info_get_item_name(&info), maxlen);
 	return 0;
 }
 
@@ -1341,7 +1342,7 @@ static int get_enum_item_ops(snd_mixer_elem_t *elem,
 			     unsigned int *itemp)
 {
 	selem_none_t *s = snd_mixer_elem_get_private(elem);
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	snd_hctl_elem_t *helem;
 	int err;
 
@@ -1351,10 +1352,9 @@ static int get_enum_item_ops(snd_mixer_elem_t *elem,
 	if (!helem) helem = s->ctls[CTL_PLAYBACK_ENUM].elem;
 	if (!helem) helem = s->ctls[CTL_CAPTURE_ENUM].elem;
 	assert(helem);
-	snd_ctl_elem_value_alloca(&ctl);
-	err = snd_hctl_elem_read(helem, ctl);
+	err = snd_hctl_elem_read(helem, &ctl);
 	if (! err)
-		*itemp = snd_ctl_elem_value_get_enumerated(ctl, channel);
+		*itemp = snd_ctl_elem_value_get_enumerated(&ctl, channel);
 	return err;
 }
 
@@ -1363,7 +1363,7 @@ static int set_enum_item_ops(snd_mixer_elem_t *elem,
 			     unsigned int item)
 {
 	selem_none_t *s = snd_mixer_elem_get_private(elem);
-	snd_ctl_elem_value_t *ctl;
+	snd_ctl_elem_value_t ctl = {0};
 	snd_hctl_elem_t *helem;
 	int err;
 	int type;
@@ -1385,13 +1385,12 @@ static int set_enum_item_ops(snd_mixer_elem_t *elem,
 	if (item >= (unsigned int)s->ctls[type].max) {
 		return -EINVAL;
 	}
-	snd_ctl_elem_value_alloca(&ctl);
-	err = snd_hctl_elem_read(helem, ctl);
+	err = snd_hctl_elem_read(helem, &ctl);
 	if (err < 0) {
 		return err;
 	}
-	snd_ctl_elem_value_set_enumerated(ctl, channel, item);
-	return snd_hctl_elem_write(helem, ctl);
+	snd_ctl_elem_value_set_enumerated(&ctl, channel, item);
+	return snd_hctl_elem_write(helem, &ctl);
 }
 
 static struct sm_elem_ops simple_none_ops = {
@@ -1420,18 +1419,17 @@ static int simple_add1(snd_mixer_class_t *class, const char *name,
 	snd_mixer_selem_id_t *id;
 	int new = 0;
 	int err;
-	snd_ctl_elem_info_t *info;
+	snd_ctl_elem_info_t info = {0};
 	selem_none_t *simple;
 	const char *name1;
 	snd_ctl_elem_type_t ctype;
 	unsigned long values;
 
-	snd_ctl_elem_info_alloca(&info);
-	err = snd_hctl_elem_info(helem, info);
+	err = snd_hctl_elem_info(helem, &info);
 	if (err < 0)
 		return err;
-	ctype = snd_ctl_elem_info_get_type(info);
-	values = snd_ctl_elem_info_get_count(info);
+	ctype = snd_ctl_elem_info_get_type(&info);
+	values = snd_ctl_elem_info_get_count(&info);
 	switch (type) {
 	case CTL_SINGLE:
 		if (ctype == SND_CTL_ELEM_TYPE_ENUMERATED)
@@ -1528,8 +1526,10 @@ static int simple_add1(snd_mixer_class_t *class, const char *name,
 		simple->selem.id = id;
 		simple->selem.ops = &simple_none_ops;
 		err = snd_mixer_elem_new(&melem, SND_MIXER_ELEM_SIMPLE,
-					 get_compare_weight(snd_mixer_selem_id_get_name(simple->selem.id), snd_mixer_selem_id_get_index(simple->selem.id)),
-					 simple, selem_free);
+			get_compare_weight(
+				snd_mixer_selem_id_get_name(simple->selem.id),
+				snd_mixer_selem_id_get_index(simple->selem.id)),
+			simple, selem_free);
 		if (err < 0) {
 			snd_mixer_selem_id_free(id);
 			free(simple);
@@ -1542,27 +1542,30 @@ static int simple_add1(snd_mixer_class_t *class, const char *name,
 	}
 	if (simple->ctls[type].elem) {
 		SNDERR("helem (%s,'%s',%u,%u,%u) appears twice or more",
-				snd_ctl_elem_iface_name(snd_hctl_elem_get_interface(helem)),
-				snd_hctl_elem_get_name(helem),
-				snd_hctl_elem_get_index(helem),
-				snd_hctl_elem_get_device(helem),
-				snd_hctl_elem_get_subdevice(helem));
+		       snd_ctl_elem_iface_name(
+				snd_hctl_elem_get_interface(helem)),
+		       snd_hctl_elem_get_name(helem),
+		       snd_hctl_elem_get_index(helem),
+		       snd_hctl_elem_get_device(helem),
+		       snd_hctl_elem_get_subdevice(helem));
 		err = -EINVAL;
 		goto __error;
 	}
 	simple->ctls[type].elem = helem;
-	simple->ctls[type].type = snd_ctl_elem_info_get_type(info);
-	simple->ctls[type].inactive = snd_ctl_elem_info_is_inactive(info);
+	simple->ctls[type].type = snd_ctl_elem_info_get_type(&info);
+	simple->ctls[type].inactive = snd_ctl_elem_info_is_inactive(&info);
 	simple->ctls[type].values = values;
 	if ( (type == CTL_GLOBAL_ENUM) ||
 	     (type == CTL_PLAYBACK_ENUM) ||
 	     (type == CTL_CAPTURE_ENUM) ) {
 		simple->ctls[type].min = 0;
-		simple->ctls[type].max = snd_ctl_elem_info_get_items(info);
+		simple->ctls[type].max = snd_ctl_elem_info_get_items(&info);
 	} else {
 		if (ctype == SND_CTL_ELEM_TYPE_INTEGER) {
-			simple->ctls[type].min = snd_ctl_elem_info_get_min(info);
-			simple->ctls[type].max = snd_ctl_elem_info_get_max(info);
+			simple->ctls[type].min =
+					snd_ctl_elem_info_get_min(&info);
+			simple->ctls[type].max =
+					snd_ctl_elem_info_get_max(&info);
 		}
 	}
 	switch (type) {
@@ -1607,23 +1610,24 @@ static int simple_event_add(snd_mixer_class_t *class, snd_hctl_elem_t *helem)
 	if (snd_hctl_elem_get_interface(helem) != SND_CTL_ELEM_IFACE_MIXER)
 		return 0;
 	if (strcmp(name, "Capture Source") == 0) {
-		snd_ctl_elem_info_t *info;
+		snd_ctl_elem_info_t info = {0};
 		unsigned int k, items;
 		int err;
-		snd_ctl_elem_info_alloca(&info);
-		err = snd_hctl_elem_info(helem, info);
+		err = snd_hctl_elem_info(helem, &info);
 		assert(err >= 0);
-		if (snd_ctl_elem_info_get_type(info) != SND_CTL_ELEM_TYPE_ENUMERATED)
+		if (snd_ctl_elem_info_get_type(&info) !=
+						SND_CTL_ELEM_TYPE_ENUMERATED)
 			return 0;
-		items = snd_ctl_elem_info_get_items(info);
+		items = snd_ctl_elem_info_get_items(&info);
 		for (k = 0; k < items; ++k) {
 			const char *n;
-			snd_ctl_elem_info_set_item(info, k);
-			err = snd_hctl_elem_info(helem, info);
+			snd_ctl_elem_info_set_item(&info, k);
+			err = snd_hctl_elem_info(helem, &info);
 			if (err < 0)
 				return err;
-			n = snd_ctl_elem_info_get_item_name(info);
-			err = simple_add1(class, n, helem, CTL_CAPTURE_SOURCE, k);
+			n = snd_ctl_elem_info_get_item_name(&info);
+			err = simple_add1(class, n, helem, CTL_CAPTURE_SOURCE,
+					  k);
 			if (err < 0)
 				return err;
 		}

@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -605,7 +605,7 @@ int snd_pcm_meter_open(snd_pcm_t **pcmp, const char *name, unsigned int frequenc
 static int snd_pcm_meter_add_scope_conf(snd_pcm_t *pcm, const char *name,
 					snd_config_t *root, snd_config_t *conf)
 {
-	char buf[256];
+	char buf[256], errbuf[256];
 	snd_config_iterator_t i, next;
 	const char *id;
 	const char *lib = NULL, *open_name = NULL, *str = NULL;
@@ -670,11 +670,11 @@ static int snd_pcm_meter_add_scope_conf(snd_pcm_t *pcm, const char *name,
 		open_name = buf;
 		snprintf(buf, sizeof(buf), "_snd_pcm_scope_%s_open", str);
 	}
-	h = snd_dlopen(lib, RTLD_NOW);
+	h = INTERNAL(snd_dlopen)(lib, RTLD_NOW, errbuf, sizeof(errbuf));
 	open_func = h ? dlsym(h, open_name) : NULL;
 	err = 0;
 	if (!h) {
-		SNDERR("Cannot open shared library %s", lib);
+		SNDERR("Cannot open shared library %s (%s)", lib, errbuf);
 		err = -ENOENT;
 	} else if (!open_func) {
 		SNDERR("symbol %s is not defined inside %s", open_name, lib);

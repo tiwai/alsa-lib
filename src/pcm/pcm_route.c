@@ -22,7 +22,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
   
@@ -190,7 +190,7 @@ static void snd_pcm_route_convert1_one_getput(const snd_pcm_channel_area_t *dst_
 	const char *src;
 	char *dst;
 	int src_step, dst_step;
-	u_int32_t sample = 0;
+	uint32_t sample = 0;
 	for (srcidx = 0; srcidx < ttable->nsrcs && srcidx < src_channels; ++srcidx) {
 		unsigned int channel = ttable->srcs[srcidx].channel;
 		if (channel >= src_channels)
@@ -565,10 +565,12 @@ static int snd_pcm_route_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t * params)
 	}
 	if (err < 0)
 		return err;
-	/* 3 bytes formats? */
+	/* 3 bytes or 20-bit formats? */
 	route->params.use_getput =
-		(snd_pcm_format_physical_width(src_format) + 7) / 3 == 3 ||
-		(snd_pcm_format_physical_width(dst_format) + 7) / 3 == 3;
+		(snd_pcm_format_physical_width(src_format) + 7) / 8 == 3 ||
+		(snd_pcm_format_physical_width(dst_format) + 7) / 8 == 3 ||
+		snd_pcm_format_width(src_format) == 20 ||
+		snd_pcm_format_width(dst_format) == 20;
 	route->params.get_idx = snd_pcm_linear_get_index(src_format, SND_PCM_FORMAT_S32);
 	route->params.put_idx = snd_pcm_linear_put_index(SND_PCM_FORMAT_S32, dst_format);
 	route->params.conv_idx = snd_pcm_linear_convert_index(src_format, dst_format);
@@ -877,7 +879,7 @@ static int route_chmap_init(snd_pcm_t *pcm)
 	snd_pcm_route_t *route = pcm->private_data;
 	if (!route->chmap)
 		return 0;
-	if (snd_pcm_state(pcm) != SND_PCM_STATE_PREPARED)
+	if (__snd_pcm_state(pcm) != SND_PCM_STATE_PREPARED)
 		return 0;
 
 	/* Check if we really need to set the chmap or not.

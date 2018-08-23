@@ -15,7 +15,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -41,7 +41,7 @@ int mixer_simple_basic_dlopen(snd_mixer_class_t *class,
 	struct bclass_private *priv = snd_mixer_sbasic_get_private(class);
 	const char *lib = "smixer-sbase.so";
 	void (*initpriv)(snd_mixer_class_t *class, struct bclass_private *priv);
-	char *xlib, *path;
+	char *xlib, *path, errbuf[256];
 	void *h;
 	int initflag = 0;
 
@@ -63,9 +63,9 @@ int mixer_simple_basic_dlopen(snd_mixer_class_t *class,
 	strcpy(xlib, path);
 	strcat(xlib, "/");
 	strcat(xlib, lib);
-	h = snd_dlopen(xlib, RTLD_NOW);
+	h = snd_dlopen(xlib, RTLD_NOW, errbuf, sizeof(errbuf));
 	if (h == NULL) {
-		SNDERR("Unable to open library '%s'", xlib);
+		SNDERR("Unable to open library '%s': %s", xlib, errbuf);
 		goto __error;
 	}
 	initpriv = dlsym(h, "alsa_mixer_sbasic_initpriv");

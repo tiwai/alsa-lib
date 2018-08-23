@@ -21,7 +21,7 @@
  *
  *  You should have received a copy of the GNU Lesser General Public
  *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  *  Copyright (C) 2008-2010 SlimLogic Ltd
  *  Copyright (C) 2010 Wolfson Microelectronics PLC
@@ -192,20 +192,21 @@ int snd_use_case_free_list(const char *list[], int items);
  * \return Number of list entries if success, otherwise a negative error code
  *
  * Defined identifiers:
- *   NULL 		- get card list
- *			  (in pair cardname+comment)
- *   _verbs		- get verb list
- *			  (in pair verb+comment)
- *   _devices[/{verb}]	- get list of supported devices
- *			  (in pair device+comment)
- *   _modifiers[/{verb}]- get list of supported modifiers
- *			  (in pair modifier+comment)
- *   TQ[/{verb}]	- get list of TQ identifiers
- *   _enadevs		- get list of enabled devices
- *   _enamods		- get list of enabled modifiers
+ *   - NULL			- get card list
+ *				 (in pair cardname+comment)
+ *   - _verbs			- get verb list
+ *				  (in pair verb+comment)
+ *   - _devices[/{verb}]	- get list of supported devices
+ *				  (in pair device+comment)
+ *   - _modifiers[/{verb}]	- get list of supported modifiers
+ *				  (in pair modifier+comment)
+ *   - TQ[/{verb}]		- get list of TQ identifiers
+ *   - _enadevs			- get list of enabled devices
+ *   - _enamods			- get list of enabled modifiers
  *
- *   _supporteddevs/{modifier}|{device}[/{verb}]   - list of supported devices
- *   _conflictingdevs/{modifier}|{device}[/{verb}] - list of conflicting devices
+ *   - _supporteddevs/{modifier}|{device}[/{verb}]   - list of supported devices
+ *   - _conflictingdevs/{modifier}|{device}[/{verb}] - list of conflicting devices
+ *
  *   Note that at most one of the supported/conflicting devs lists has
  *   any entries, and when neither is present, all devices are supported.
  *
@@ -229,6 +230,7 @@ int snd_use_case_get_list(snd_use_case_mgr_t *uc_mgr,
  * Known identifiers:
  *   - NULL 		- return current card
  *   - _verb		- return current verb
+ *   - _file		- return configuration file loaded for current card
  *
  *   - [=]{NAME}[/[{modifier}|{/device}][/{verb}]]
  *                      - value identifier {NAME}
@@ -331,8 +333,8 @@ int snd_use_case_get(snd_use_case_mgr_t *uc_mgr,
  * \return Zero if success, otherwise a negative error code
  *
  * Known identifiers:
- *   _devstatus/{device}	- return status for given device
- *   _modstatus/{modifier}	- return status for given modifier
+ *   - _devstatus/{device}	- return status for given device
+ *   - _modstatus/{modifier}	- return status for given modifier
  */
 int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
 		      const char *identifier,
@@ -346,19 +348,19 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
  * \return Zero if success, otherwise a negative error code
  *
  * Known identifiers:
- *   _verb 		- set current verb = value
- *   _enadev		- enable given device = value
- *   _disdev		- disable given device = value
- *   _swdev/{old_device} - new_device = value
- *			- disable old_device and then enable new_device
- *			- if old_device is not enabled just return
- *			- check transmit sequence firstly
- *   _enamod		- enable given modifier = value
- *   _dismod		- disable given modifier = value
- *   _swmod/{old_modifier} - new_modifier = value
- *			- disable old_modifier and then enable new_modifier
- *			- if old_modifier is not enabled just return
- *			- check transmit sequence firstly
+ *   - _verb			- set current verb = value
+ *   - _enadev			- enable given device = value
+ *   - _disdev			- disable given device = value
+ *   - _swdev/{old_device}	- new_device = value
+ *				  - disable old_device and then enable new_device
+ *				  - if old_device is not enabled just return
+ *				  - check transmit sequence firstly
+ *   - _enamod			- enable given modifier = value
+ *   - _dismod			- disable given modifier = value
+ *   - _swmod/{old_modifier}	- new_modifier = value
+ *				  - disable old_modifier and then enable new_modifier
+ *				  - if old_modifier is not enabled just return
+ *				  - check transmit sequence firstly
  */
 int snd_use_case_set(snd_use_case_mgr_t *uc_mgr,
                      const char *identifier,

@@ -23,7 +23,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -35,8 +35,7 @@
 #include <sys/ioctl.h>
 #include <math.h>
 #include <dlfcn.h>
-#include "config.h"
-#include "asoundlib.h"
+#include "mixer_local.h"
 #include "mixer_simple.h"
 
 #ifndef DOC_HIDDEN
@@ -66,7 +65,7 @@ static int try_open(snd_mixer_class_t *class, const char *lib)
 	class_priv_t *priv = snd_mixer_class_get_private(class);
 	snd_mixer_event_t event_func;
 	snd_mixer_sbasic_init_t init_func = NULL;
-	char *xlib, *path;
+	char *xlib, *path, errbuf[256];
 	void *h;
 	int err = 0;
 
@@ -81,9 +80,9 @@ static int try_open(snd_mixer_class_t *class, const char *lib)
 	strcpy(xlib, path);
 	strcat(xlib, "/");
 	strcat(xlib, lib);
-	h = snd_dlopen(xlib, RTLD_NOW);
+	h = INTERNAL(snd_dlopen)(xlib, RTLD_NOW, errbuf, sizeof(errbuf));
 	if (h == NULL) {
-		SNDERR("Unable to open library '%s'", xlib);
+		SNDERR("Unable to open library '%s' (%s)", xlib, errbuf);
 		free(xlib);
 		return -ENXIO;
 	}
@@ -114,7 +113,7 @@ static int try_open_full(snd_mixer_class_t *class, snd_mixer_t *mixer,
 	class_priv_t *priv = snd_mixer_class_get_private(class);
 	snd_mixer_event_t event_func;
 	snd_mixer_sfbasic_init_t init_func = NULL;
-	char *xlib, *path;
+	char *xlib, *path, errbuf[256];
 	void *h;
 	int err = 0;
 
@@ -128,7 +127,7 @@ static int try_open_full(snd_mixer_class_t *class, snd_mixer_t *mixer,
 	strcat(xlib, "/");
 	strcat(xlib, lib);
 	/* note python modules requires RTLD_GLOBAL */
-	h = snd_dlopen(xlib, RTLD_NOW|RTLD_GLOBAL);
+	h = INTERNAL(snd_dlopen)(xlib, RTLD_NOW|RTLD_GLOBAL, errbuf, sizeof(errbuf));
 	if (h == NULL) {
 		SNDERR("Unable to open library '%s'", xlib);
 		free(xlib);
@@ -299,8 +298,12 @@ int snd_mixer_simple_basic_register(snd_mixer_t *mixer,
 	snd_mixer_class_set_private(class, priv);
 	snd_mixer_class_set_private_free(class, private_free);
 	file = getenv("ALSA_MIXER_SIMPLE");
-	if (!file)
-		file = ALSA_CONFIG_DIR "/smixer.conf";
+	if (!file) {
+		const char *topdir = snd_config_topdir();
+		char *s = alloca(strlen(topdir) + strlen("smixer.conf") + 2);
+		sprintf(s, "%s/smixer.conf", topdir);
+		file = s;
+	}
 	err = snd_config_top(&top);
 	if (err >= 0) {
 		err = snd_input_stdio_open(&input, file, "r");

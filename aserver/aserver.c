@@ -14,13 +14,13 @@
  *
  *   You should have received a copy of the GNU General Public License
  *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
 #include <sys/shm.h>
 #include <sys/socket.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/un.h>
 #include <sys/uio.h>
 #include <stdio.h>
@@ -490,6 +490,7 @@ static int pcm_shm_cmd(client_t *client)
 	case SND_PCM_IOCTL_MMAP:
 	{
 		ctrl->result = snd_pcm_mmap(pcm);
+		break;
 	}
 	case SND_PCM_IOCTL_MUNMAP:
 	{

@@ -28,7 +28,7 @@
  *
  *   You should have received a copy of the GNU Lesser General Public
  *   License along with this library; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -456,6 +456,18 @@ struct filedesc {
 	snd_input_t *in;
 	unsigned int line, column;
 	struct filedesc *next;
+
+	/* list of the include paths (configuration directories),
+	 * defined by <searchdir:relative-path/to/top-alsa-conf-dir>,
+	 * for searching its included files.
+	 */
+	struct list_head include_paths;
+};
+
+/* path to search included files */
+struct include_path {
+	char *dir;
+	struct list_head list;
 };
 
 #define LOCAL_ERROR			(-0x68000000)
@@ -478,7 +490,9 @@ static void snd_config_init_mutex(void)
 	pthread_mutexattr_t attr;
 
 	pthread_mutexattr_init(&attr);
+#ifdef HAVE_PTHREAD_MUTEX_RECURSIVE
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+#endif
 	pthread_mutex_init(&snd_config_update_mutex, &attr);
 	pthread_mutexattr_destroy(&attr);
 }
@@ -500,6 +514,139 @@ static inline void snd_config_lock(void) { }
 static inline void snd_config_unlock(void) { }
 
 #endif
+
+/*
+ * Add a diretory to the paths to search included files.
+ * param fd -  File object that owns these paths to search files included by it.
+ * param dir - Path of the directory to add. Allocated externally and need to
+*              be freed manually later.
+ * return - Zero if successful, otherwise a negative error code.
+ *
+ * The direcotry should be a subdiretory of top configuration directory
+ * "/usr/share/alsa/".
+ */
+static int add_include_path(struct filedesc *fd, char *dir)
+{
+	struct include_path *path;
+
+	path = calloc(1, sizeof(*path));
+	if (!path)
+		return -ENOMEM;
+
+	path->dir = dir;
+	list_add_tail(&path->list, &fd->include_paths);
+	return 0;
+}
+
+/*
+ * Free all include paths of a file descriptor.
+ * param fd - File object that owns these paths to search files included by it.
+ */
+static void free_include_paths(struct filedesc *fd)
+{
+	struct list_head *pos, *npos, *base;
+	struct include_path *path;
+
+	base = &fd->include_paths;
+	list_for_each_safe(pos, npos, base) {
+		path = list_entry(pos, struct include_path, list);
+		list_del(&path->list);
+		if (path->dir)
+			free(path->dir);
+		free(path);
+	}
+}
+
+/**
+ * \brief Returns the default top-level config directory
+ * \return The top-level config directory path string
+ *
+ * This function returns the string of the top-level config directory path.
+ * If the path is specified via the environment variable \c ALSA_CONFIG_DIR
+ * and the value is a valid path, it returns this value.  If unspecified, it
+ * returns the default value, "/usr/share/alsa".
+ */
+const char *snd_config_topdir(void)
+{
+	static char *topdir;
+
+	if (!topdir) {
+		topdir = getenv("ALSA_CONFIG_DIR");
+		if (!topdir || *topdir != '/' || strlen(topdir) >= PATH_MAX)
+			topdir = ALSA_CONFIG_DIR;
+	}
+	return topdir;
+}
+
+static char *_snd_config_path(const char *name)
+{
+	const char *root = snd_config_topdir();
+	char *path = malloc(strlen(root) + strlen(name) + 2);
+	if (!path)
+		return NULL;
+	sprintf(path, "%s/%s", root, name);
+	return path;
+}
+
+/*
+ * Search and open a file, and creates a new input object reading from the file.
+ * param inputp - The functions puts the pointer to the new input object
+ *               at the address specified by \p inputp.
+ * param file - Name of the configuration file.
+ * param include_paths - Optional, addtional directories to search the file.
+ * return - Zero if successful, otherwise a negative error code.
+ *
+ * This function will search and open the file in the following order
+ * of priority:
+ * 1. directly open the file by its name;
+ * 2. search for the file name in top configuration directory
+ *     "/usr/share/alsa/";
+ * 3. search for the file name in in additional configuration directories
+ *     specified by users, via alsaconf syntax
+ *     <searchdir:relative-path/to/user/share/alsa>;
+ *     These directories should be subdirectories of /usr/share/alsa.
+ */
+static int input_stdio_open(snd_input_t **inputp, const char *file,
+			    struct list_head *include_paths)
+{
+	struct list_head *pos, *base;
+	struct include_path *path;
+	char full_path[PATH_MAX + 1];
+	int err = 0;
+
+	err = snd_input_stdio_open(inputp, file, "r");
+	if (err == 0)
+		goto out;
+
+	if (file[0] == '/') /* not search file with absolute path */
+		return err;
+
+	/* search file in top configuration directory /usr/share/alsa */
+	snprintf(full_path, PATH_MAX, "%s/%s", snd_config_topdir(), file);
+	err = snd_input_stdio_open(inputp, full_path, "r");
+	if (err == 0)
+		goto out;
+
+	/* search file in user specified include paths. These directories
+	 * are subdirectories of /usr/share/alsa.
+	 */
+	if (include_paths) {
+		base = include_paths;
+		list_for_each(pos, base) {
+			path = list_entry(pos, struct include_path, list);
+			if (!path->dir)
+				continue;
+
+			snprintf(full_path, PATH_MAX, "%s/%s", path->dir, file);
+			err = snd_input_stdio_open(inputp, full_path, "r");
+			if (err == 0)
+				goto out;
+		}
+	}
+
+out:
+	return err;
+}
 
 static int safe_strtoll(const char *str, long long *val)
 {
@@ -629,20 +776,49 @@ static int get_char_skip_comments(input_t *input)
 			char *str;
 			snd_input_t *in;
 			struct filedesc *fd;
+			DIR *dirp;
 			int err = get_delimstring(&str, '>', input);
 			if (err < 0)
 				return err;
-			if (!strncmp(str, "confdir:", 8)) {
-				char *tmp = malloc(strlen(ALSA_CONFIG_DIR) + 1 + strlen(str + 8) + 1);
-				if (tmp == NULL) {
-					free(str);
-					return -ENOMEM;
-				}
-				sprintf(tmp, ALSA_CONFIG_DIR "/%s", str + 8);
+
+			if (!strncmp(str, "searchdir:", 10)) {
+				/* directory to search included files */
+				char *tmp = _snd_config_path(str + 10);
 				free(str);
+				if (tmp == NULL)
+					return -ENOMEM;
 				str = tmp;
+
+				dirp = opendir(str);
+				if (!dirp) {
+					SNDERR("Invalid search dir %s", str);
+					free(str);
+					return -EINVAL;
+				}
+				closedir(dirp);
+
+				err = add_include_path(input->current, str);
+				if (err < 0) {
+					SNDERR("Cannot add search dir %s", str);
+					free(str);
+					return err;
+				}
+				continue;
 			}
-			err = snd_input_stdio_open(&in, str, "r");
+
+			if (!strncmp(str, "confdir:", 8)) {
+				/* file in the specified directory */
+				char *tmp = _snd_config_path(str + 8);
+				free(str);
+				if (tmp == NULL)
+					return -ENOMEM;
+				str = tmp;
+				err = snd_input_stdio_open(&in, str, "r");
+			} else { /* absolute or relative file path */
+				err = input_stdio_open(&in, str,
+						&input->current->include_paths);
+			}
+
 			if (err < 0) {
 				SNDERR("Cannot access file %s", str);
 				free(str);
@@ -658,6 +834,7 @@ static int get_char_skip_comments(input_t *input)
 			fd->next = input->current;
 			fd->line = 1;
 			fd->column = 0;
+			INIT_LIST_HEAD(&fd->include_paths);
 			input->current = fd;
 			continue;
 		}
@@ -805,6 +982,7 @@ static int get_freestring(char **string, int id, input_t *input)
 		case '.':
 			if (!id)
 				break;
+			/* fall through */
 		case ' ':
 		case '\f':
 		case '\t':
@@ -1668,6 +1846,7 @@ static int snd_config_load1(snd_config_t *config, snd_input_t *in, int override)
 	fd->line = 1;
 	fd->column = 0;
 	fd->next = NULL;
+	INIT_LIST_HEAD(&fd->include_paths);
 	input.current = fd;
 	input.unget = 0;
 	err = parse_defs(config, &input, 0, override);
@@ -1708,9 +1887,12 @@ static int snd_config_load1(snd_config_t *config, snd_input_t *in, int override)
 		fd_next = fd->next;
 		snd_input_close(fd->in);
 		free(fd->name);
+		free_include_paths(fd);
 		free(fd);
 		fd = fd_next;
 	}
+
+	free_include_paths(fd);
 	free(fd);
 	return err;
 }
@@ -3251,9 +3433,6 @@ int snd_config_search_alias_hooks(snd_config_t *config,
 /** The name of the environment variable containing the files list for #snd_config_update. */
 #define ALSA_CONFIG_PATH_VAR "ALSA_CONFIG_PATH"
 
-/** The name of the default files used by #snd_config_update. */
-#define ALSA_CONFIG_PATH_DEFAULT ALSA_CONFIG_DIR "/alsa.conf"
-
 /**
  * \ingroup Config
  * \brief Configuration top-level node (the global configuration).
@@ -3299,7 +3478,7 @@ static int snd_config_hooks_call(snd_config_t *root, snd_config_t *config, snd_c
 {
 	void *h = NULL;
 	snd_config_t *c, *func_conf = NULL;
-	char *buf = NULL;
+	char *buf = NULL, errbuf[256];
 	const char *lib = NULL, *func_name = NULL;
 	const char *str;
 	int (*func)(snd_config_t *root, snd_config_t *config, snd_config_t **dst, snd_config_t *private_data) = NULL;
@@ -3359,11 +3538,11 @@ static int snd_config_hooks_call(snd_config_t *root, snd_config_t *config, snd_c
 		buf[len-1] = '\0';
 		func_name = buf;
 	}
-	h = snd_dlopen(lib, RTLD_NOW);
+	h = INTERNAL(snd_dlopen)(lib, RTLD_NOW, errbuf, sizeof(errbuf));
 	func = h ? snd_dlsym(h, func_name, SND_DLSYM_VERSION(SND_CONFIG_DLSYM_VERSION_HOOK)) : NULL;
 	err = 0;
 	if (!h) {
-		SNDERR("Cannot open shared library %s", lib);
+		SNDERR("Cannot open shared library %s (%s)", lib, errbuf);
 		err = -ENOENT;
 	} else if (!func) {
 		SNDERR("symbol %s is not defined inside %s", func_name, lib);
@@ -3712,8 +3891,13 @@ int snd_config_update_r(snd_config_t **_top, snd_config_update_t **_update, cons
 	configs = cfgs;
 	if (!configs) {
 		configs = getenv(ALSA_CONFIG_PATH_VAR);
-		if (!configs || !*configs)
-			configs = ALSA_CONFIG_PATH_DEFAULT;
+		if (!configs || !*configs) {
+			const char *topdir = snd_config_topdir();
+			char *s = alloca(strlen(topdir) +
+					 strlen("alsa.conf") + 2);
+			sprintf(s, "%s/alsa.conf", topdir);
+			configs = s;
+		}
 	}
 	for (k = 0, c = configs; (l = strcspn(c, ": ")) > 0; ) {
 		c += l;
@@ -4288,7 +4472,7 @@ static int _snd_config_evaluate(snd_config_t *src,
 {
 	int err;
 	if (pass == SND_CONFIG_WALK_PASS_PRE) {
-		char *buf = NULL;
+		char *buf = NULL, errbuf[256];
 		const char *lib = NULL, *func_name = NULL;
 		const char *str;
 		int (*func)(snd_config_t **dst, snd_config_t *root,
@@ -4347,12 +4531,12 @@ static int _snd_config_evaluate(snd_config_t *src,
 			buf[len-1] = '\0';
 			func_name = buf;
 		}
-		h = snd_dlopen(lib, RTLD_NOW);
+		h = INTERNAL(snd_dlopen)(lib, RTLD_NOW, errbuf, sizeof(errbuf));
 		if (h)
 			func = snd_dlsym(h, func_name, SND_DLSYM_VERSION(SND_CONFIG_DLSYM_VERSION_EVALUATE));
 		err = 0;
 		if (!h) {
-			SNDERR("Cannot open shared library %s", lib);
+			SNDERR("Cannot open shared library %s (%s)", lib, errbuf);
 			err = -ENOENT;
 			goto _errbuf;
 		} else if (!func) {
