@@ -1,30 +1,22 @@
+# Use case Configuration for bytcht-da7213
+
 SectionVerb {
 
-	Value {
-		TQ "HiFi"
-		# ALSA PCM device for HiFi
-		PlaybackPCM "hw:chtnau8824"
-		CapturePCM "hw:chtnau8824"
-	}
-
 	EnableSequence [
-		cdev "hw:chtnau8824"
+		cdev "hw:bytchtda7213"
 
-		# Mixer
-
-		# compress
+		# media mixer settings
+		#   compress
 		cset "name='media0_in Gain 0 Switch' on"
 		cset "name='media0_in Gain 0 Volume' 0"
 
-		# normal
+		#   normal
 		cset "name='media1_in Gain 0 Switch' on"
 		cset "name='media1_in Gain 0 Volume' 0"
-
-		# swm loopback
+		#   swm loopback
 		cset "name='media2_in Gain 0 Switch' off"
 		cset "name='media2_in Gain 0 Volume' 0%"
-
-		# deep buffer
+		#   deep buffer
 		cset "name='media3_in Gain 0 Switch' on"
 		cset "name='media3_in Gain 0 Volume' 0"
 
@@ -65,6 +57,9 @@ SectionVerb {
 		cset "name='modem_out mix 0 sprot_loop_in Switch' off"
 		cset "name='modem_out Gain 0 Switch' on"
 		cset "name='modem_out Gain 0 Volume' 0"
+
+		# input settings
+		# pcm1_out settings
 
 		# input used when SSP2 is connected
 		cset "name='codec_in0 Gain 0 Switch' on"
@@ -126,157 +121,176 @@ SectionVerb {
 		cset "name='sprot_loop_out mix 0 pcm1_in Switch' off"
 		cset "name='sprot_loop_out mix 0 sprot_loop_in Switch' off"
 
-		# Playback TDM configuration
-		cset "name='DACL Channel Source' 0"
-		cset "name='DACR Channel Source' 1"
-		# Input Configuration
-		cset "name='DMIC1 Enable Switch' off"
-		cset "name='DMIC2 Enable Switch' off"
-		cset "name='DMIC3 Enable Switch' off"
-		cset "name='DMIC4 Enable Switch' off"
-		cset "name='MIC1 Volume' 10"
-		cset "name='MIC2 Volume' 10"
-		# Output Configuration
-		cset "name='Speaker Right DACR Volume' 1"
-		cset "name='Speaker Left DACL Volume' 1"
-		# Button Configuration
-		cset "name='THD for key media' 10"
-		cset "name='THD for key voice command' 16"
-		cset "name='THD for key volume up' 38"
-		cset "name='THD for key volume down' 115"
+		# DA7213 default output routing
+
+		# Ensure stream only goes to DAI
+		cset "name='Mixout Left Mixin Left Switch' off"
+		cset "name='Mixout Right Mixin Right Switch' off"
+		cset "name='Mixout Left Aux Left Switch' off"
+		cset "name='Mixout Right Aux Right Switch' off"
+
 	]
 
 	DisableSequence [
-		cdev "hw:chtnau8824"
-
-		# disable audio output path
-		cset "name='codec_out1 mix 0 pcm0_in Switch' off"
-		cset "name='media0_out mix 0 media1_in Switch' off"
-
-		cset "name='media1_in Gain 0 Switch' off"
-		cset "name='pcm0_in Gain 0 Switch' off"
-		cset "name='codec_out1 Gain 0 Switch' off"
-
-		# disable audio input path
-		cset "name='pcm1_out mix 0 media_loop2_in Switch' off"
-		cset "name='media_loop2_out mix 0 codec_in0 Switch' off"
-
-		cset "name='media_loop2_out Gain 0 Switch' off"
-		cset "name='pcm1_out Gain 0 Switch' off"
-		cset "name='codec_in0 Gain 0 Switch' off"
-
 	]
+
+	# ALSA PCM
+	Value {
+		# ALSA PCM device for HiFi
+		PlaybackPCM "hw:bytchtda7213"
+		CapturePCM "hw:bytchtda7213"
+	}
 }
 
-SectionDevice."Speaker" {
-	Comment "Speaker"
-
-	Value {
-		PlaybackChannels "2"
-	}
+SectionDevice."MIC1" {
+	Comment "MIC1 capture - headset"
 
 	ConflictingDevice [
-		"Headphones"
+		"MIC2"
+		"AUX"
 	]
 
 	EnableSequence [
-		cdev "hw:chtnau8824"
+		cdev "hw:bytchtda7213"
 
-		cset "name='Ext Spk Switch' on"
+#		cset "name='Mic 1 Amp Source MUX' Differential"
+#		cset "name='Mic 1 Amp Source MUX' MIC_N"
+
+		cset "name='Mic 1 Amp Source MUX' MIC_P"
+		cset "name='Mic 1 Volume' 6"
+		cset "name='Mixin PGA Volume' 47%"
+		cset "name='ADC Volume' 112"
+
+		cset "name='Mixin Left Mic 1 Switch' on"
+		cset "name='Mixin Right Mic 1 Switch' on"
+		cset "name='Mixin PGA Switch' on"
+		cset "name='Mic 1 Switch' on"
+		cset "name='ADC Switch' on"
+		cset "name='Headset Mic Switch' on"
 	]
 
 	DisableSequence [
-		cdev "hw:chtnau8824"
+		cdev "hw:bytchtda7213"
 
-		cset "name='Ext Spk Switch' off"
+		cset "name='Headset Mic Switch' off"
+		cset "name='ADC Switch' off"
+		cset "name='Mic 1 Switch' off"
+		cset "name='Mixin PGA Switch' off"
+		cset "name='Mixin Left Mic 1 Switch' off"
+		cset "name='Mixin Right Mic 1 Switch' off"
 	]
+
+	Value {
+		CaptureChannels 2
+	}
+}
+
+SectionDevice."MIC2" {
+	Comment "MIC2 capture"
+
+	ConflictingDevice [
+		"MIC1"
+		"AUX"
+	]
+
+	EnableSequence [
+		cdev "hw:bytchtda7213"
+
+#		cset "name='Mic 2 Amp Source MUX' Differential"
+#		cset "name='Mic 2 Amp Source MUX' MIC_N"
+
+		cset "name='Mic 2 Amp Source MUX' MIC_P"
+		cset "name='Mic 2 Volume' 6"
+		cset "name='Mixin PGA Volume' 47%"
+		cset "name='ADC Volume' 112"
+
+		cset "name='Mixin Left Mic 2 Switch' on"
+		cset "name='Mixin Right Mic 2 Switch' on"
+		cset "name='Mixin PGA Switch' on"
+		cset "name='Mic 2 Switch' on"
+		cset "name='ADC Switch' on"
+		cset "name='Mic Switch' on"
+
+	]
+
+	DisableSequence [
+		cdev "hw:bytchtda7213"
+
+		cset "name='Mic Switch' off"
+		cset "name='ADC Switch' off"
+		cset "name='Mic 1 Switch' off"
+		cset "name='Mixin PGA Switch' off"
+		cset "name='Mixin Left Mic 1 Switch' off"
+		cset "name='Mixin Right Mic 1 Switch' off"
+	]
+
+	Value {
+		CaptureChannels 2
+	}
+}
+
+SectionDevice."AUX" {
+	Comment "AUX capture"
+
+	ConflictingDevice [
+		"MIC1"
+		"MIC2"
+	]
+
+	EnableSequence [
+		cdev "hw:bytchtda7213"
+
+		cset "name='Aux Volume' 78%"
+		cset "name='ADC Volume' 76%"
+		cset "name='Mixin PGA Volume' 47%"
+
+		cset "name='Mixin Left Aux Left Switch' on"
+		cset "name='Mixin Right Aux Right Switch' on"
+		cset "name='Mixin PGA Switch' on"
+		cset "name='ADC Switch' on"
+		cset "name='Aux Switch' on"
+	]
+
+	DisableSequence [
+		cdev "hw:bytchtda7213"
+
+		cset "name='Aux Switch' off"
+		cset "name='ADC Switch' off"
+		cset "name='Mixin PGA Switch' off"
+		cset "name='Mixin Left Aux Left Switch' off"
+		cset "name='Mixin Right Aux Right Switch' off"
+	]
+
+	Value {
+		CaptureChannels 2
+	}
 }
 
 SectionDevice."Headphones" {
-	Comment "Headphones"
+	Comment "Headphones playback"
+
+	EnableSequence [
+		cdev "hw:bytchtda7213"
+
+		cset "name='Headphone Volume' 50%"
+		cset "name='Mixout Left DAC Left Switch' on"
+		cset "name='Mixout Right DAC Right Switch' on"
+		cset "name='Headphone Switch' on"
+		cset "name='Headphone Jack Switch' on"
+
+	]
+
+	DisableSequence [
+		cdev "hw:bytchtda7213"
+
+		cset "name='Headphone Jack Switch' off"
+		cset "name='Headphone Switch' off"
+		cset "name='Mixout Left DAC Left Switch' off"
+		cset "name='Mixout Right DAC Right Switch' off"
+	]
 
 	Value {
 		PlaybackChannels "2"
-		JackControl "Headphone Jack"
 	}
-
-	ConflictingDevice [
-		"Speaker"
-	]
-
-	EnableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='Headphone Switch' on"
-	]
-
-	DisableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='Headphone Switch' off"
-	]
 }
 
-SectionDevice."InternalMic" {
-	Comment "Internal Microphone"
-
-	Value {
-		CaptureChannels "2"
-		CapturePriority "150"
-	}
-
-	ConflictingDevice [
-		"HeadsetMic"
-	]
-
-	EnableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='ADC CH0 Select' 0"
-		cset "name='ADC CH1 Select' 0"
-
-		cset "name='Int Mic Switch' on"
-		cset "name='Right ADC MIC Switch' on"
-		cset "name='Left ADC MIC Switch' on"
-	]
-
-	DisableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='Int Mic Switch' off"
-		cset "name='Right ADC MIC Switch' off"
-		cset "name='Left ADC MIC Switch' off"
-	]
-}
-
-SectionDevice."HeadsetMic" {
-	Comment "Headset Microphone"
-
-	Value {
-		CaptureChannels "2"
-		JackControl "Headset Mic Jack"
-	}
-
-	ConflictingDevice [
-		"InternalMic"
-	]
-
-	EnableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='ADC CH0 Select' 1"
-		cset "name='ADC CH1 Select' 1"
-
-		cset "name='Headset Mic Switch' on"
-		cset "name='Right ADC HSMIC Switch' on"
-		cset "name='Left ADC HSMIC Switch' on"
-	]
-
-	DisableSequence [
-		cdev "hw:chtnau8824"
-
-		cset "name='Headset Mic Switch' off"
-		cset "name='Right ADC HSMIC Switch' off"
-		cset "name='Left ADC HSMIC Switch' off"
-	]
-}
